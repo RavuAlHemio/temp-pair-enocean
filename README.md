@@ -60,7 +60,7 @@ additional bonus, it varies the brightness of the digits according to the ambien
 | PB0  | DO PP   | 7seg chip 2 select for SPI1 |
 | PB10 | AF4 PP? | I2C2 SCL (buttons & LEDs / light sensor) |
 | PB11 | AF4 PP? | I2C2 SDA (buttons & LEDs / light sensor) |
-| PB14 | DI Flt  | button pushed interrupt (`SYSCFG.EXTICR4.EXTI14 = PB`, `EXTI.IMR.IM14 = false`) |
+| PB14 | DI PU   | button pushed interrupt (`SYSCFG.EXTICR4.EXTI14 = PB`, `EXTI.IMR.IM14 = false`) |
 | PC6  | DO PP   | 7seg blank displays |
 | PC15 | DO PP   | reset EnOcean module |
 | PD8  | AF7 PP? | USART3 Tx (emergency, board to PC) |
