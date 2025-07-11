@@ -151,6 +151,7 @@ version = "0.1.0"
 dependencies = [
  "cortex-m-rt",
  "stm32f7",
+ "vcell",
 ]
 
 [[package]]

@@ -2,10 +2,18 @@
 #![no_std]
 
 
+mod ring_buffer;
+mod spi;
+mod uart;
+
+
 use core::panic::PanicInfo;
 
 use cortex_m_rt::entry;
 use stm32f7::stm32f745::Peripherals;
+
+
+pub const CLOCK_SPEED_HZ: u32 = 16_000_000;
 
 
 #[panic_handler]
