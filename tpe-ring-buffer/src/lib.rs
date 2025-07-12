@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 
 use core::cmp::Ordering;
@@ -22,7 +22,7 @@ impl<T, const SIZE: usize> RingBuffer<T, SIZE> {
         }
     }
 
-pub const fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         let mut len_pos = self.read_pos;
         let mut length = 0;
         while len_pos != self.write_pos {
@@ -217,5 +217,143 @@ impl<'a, T, const SIZE: usize> Iterator for Iter<'a, T, SIZE> {
         };
         self.iter_pos = (self.iter_pos + 1) % SIZE;
         Some(value)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::RingBuffer;
+
+    fn new_buffer() -> RingBuffer<u8, 4> { RingBuffer::new() }
+
+    #[test]
+    pub fn test_empty() {
+        let mut buf = new_buffer();
+        assert_eq!(buf.len(), 0);
+        assert!(buf.is_empty());
+        assert!(!buf.is_full());
+
+        let mut iter = buf.iter();
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next(), None);
+
+        assert_eq!(buf.peek(), None);
+        assert_eq!(buf.read(), None);
+    }
+
+    #[test]
+    pub fn test_read_write() {
+        let mut buf = new_buffer();
+        assert_eq!(buf.write(3), true);
+
+        assert_eq!(buf.len(), 1);
+        assert!(!buf.is_empty());
+        assert!(!buf.is_full());
+
+        let mut iter = buf.iter();
+        assert_eq!(iter.next(), Some(&3));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next(), None);
+        assert_eq!(buf.len(), 1);
+
+        assert_eq!(buf.peek(), Some(&3));
+        assert_eq!(buf.len(), 1);
+
+        assert_eq!(buf.read(), Some(3));
+        assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    pub fn test_fill() {
+        let mut buf = new_buffer();
+        assert_eq!(buf.write(3), true);
+        assert_eq!(buf.write(4), true);
+        assert_eq!(buf.write(5), true);
+        assert_eq!(buf.write(6), false);
+
+        assert_eq!(buf.len(), 3);
+        assert!(!buf.is_empty());
+        assert!(buf.is_full());
+
+        let mut iter = buf.iter();
+        assert_eq!(iter.next(), Some(&3));
+        assert_eq!(iter.next(), Some(&4));
+        assert_eq!(iter.next(), Some(&5));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next(), None);
+        assert_eq!(buf.len(), 3);
+
+        assert_eq!(buf.peek(), Some(&3));
+        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.read(), Some(3));
+        assert_eq!(buf.len(), 2);
+
+        assert_eq!(buf.peek(), Some(&4));
+        assert_eq!(buf.len(), 2);
+        assert_eq!(buf.read(), Some(4));
+        assert_eq!(buf.len(), 1);
+
+        assert_eq!(buf.peek(), Some(&5));
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf.read(), Some(5));
+        assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    pub fn test_wrwr() {
+        let mut buf = new_buffer();
+        assert_eq!(buf.write(3), true);
+        assert_eq!(buf.write(4), true);
+        assert_eq!(buf.write(5), true);
+
+        assert_eq!(buf.len(), 3);
+        assert!(!buf.is_empty());
+        assert!(buf.is_full());
+
+        {
+            let mut iter = buf.iter();
+            assert_eq!(iter.next(), Some(&3));
+            assert_eq!(iter.next(), Some(&4));
+            assert_eq!(iter.next(), Some(&5));
+            assert_eq!(iter.next(), None);
+            assert_eq!(iter.next(), None);
+            assert_eq!(iter.next(), None);
+            assert_eq!(buf.len(), 3);
+        }
+
+        assert_eq!(buf.read(), Some(3));
+        assert_eq!(buf.len(), 2);
+
+        assert_eq!(buf.write(6), true);
+
+        {
+            let mut iter = buf.iter();
+            assert_eq!(iter.next(), Some(&4));
+            assert_eq!(iter.next(), Some(&5));
+            assert_eq!(iter.next(), Some(&6));
+            assert_eq!(iter.next(), None);
+            assert_eq!(iter.next(), None);
+            assert_eq!(iter.next(), None);
+            assert_eq!(buf.len(), 3);
+        }
+
+        assert_eq!(buf.peek(), Some(&4));
+        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.read(), Some(4));
+        assert_eq!(buf.len(), 2);
+
+        assert_eq!(buf.peek(), Some(&5));
+        assert_eq!(buf.len(), 2);
+        assert_eq!(buf.read(), Some(5));
+        assert_eq!(buf.len(), 1);
+
+        assert_eq!(buf.peek(), Some(&6));
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf.read(), Some(6));
+        assert_eq!(buf.len(), 0);
     }
 }
