@@ -22,7 +22,17 @@ impl<T, const SIZE: usize> RingBuffer<T, SIZE> {
         }
     }
 
-    pub const fn iter(&self) -> Iter<T, SIZE> {
+pub const fn len(&self) -> usize {
+        let mut len_pos = self.read_pos;
+        let mut length = 0;
+        while len_pos != self.write_pos {
+            len_pos = (len_pos + 1) % SIZE;
+            length += 1;
+        }
+        length
+    }
+
+    pub const fn iter(&self) -> Iter<'_, T, SIZE> {
         Iter {
             ring_buffer: self,
             iter_pos: self.read_pos,
