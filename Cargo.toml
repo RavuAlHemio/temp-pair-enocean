@@ -1,9 +1,5 @@
-[package]
-name = "temp-pair-enocean"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-cortex-m-rt = { version = "0.7" }
-stm32f7 = { version = "0.16", features = ["stm32f745"] }
-vcell = { version = "0.1" }
+[workspace]
+members = [
+    "temp-pair-enocean",
+]
+resolver = "2"
