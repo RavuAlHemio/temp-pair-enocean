@@ -150,7 +150,9 @@ name = "temp-pair-enocean"
 version = "0.1.0"
 dependencies = [
  "cortex-m-rt",
+ "critical-section",
  "stm32f7",
+ "tpe-ring-buffer",
  "vcell",
 ]
 

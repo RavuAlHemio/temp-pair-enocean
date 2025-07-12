@@ -1,10 +1,15 @@
+use core::cell::RefCell;
+
+use critical_section::Mutex;
 use stm32f7::stm32f745::Peripherals;
 use stm32f7::stm32f745::{interrupt, usart1};
+use tpe_ring_buffer::RingBuffer;
 
 
 pub trait Uart {
     fn get_peripheral(peripherals: &Peripherals) -> &usart1::RegisterBlock;
     fn enable_peripheral_clock(peripherals: &Peripherals);
+    fn take_byte() -> Option<u8>;
 
     fn set_up(peripherals: &Peripherals, speed_divisor: u16) {
         let uart = Self::get_peripheral(peripherals);
@@ -63,6 +68,7 @@ pub trait Uart {
     }
 }
 
+static USART1_BUFFER: Mutex<RefCell<RingBuffer<u8, 32>>> = Mutex::new(RefCell::new(RingBuffer::new()));
 
 pub struct Usart1;
 impl Uart for Usart1 {
@@ -75,9 +81,25 @@ impl Uart for Usart1 {
             .usart1en().set_bit()
         );
     }
+
+    fn take_byte() -> Option<u8> {
+        critical_section::with(|cs| {
+            USART1_BUFFER.borrow_ref_mut(cs)
+                .read()
+        })
+    }
 }
 
 #[interrupt]
 fn USART1() {
-    // TODO
+    let peripherals = unsafe { Peripherals::steal() };
+    let interrupt_state = peripherals.USART1.isr().read();
+    if interrupt_state.rxne().is_data_ready() {
+        let read_full_byte = peripherals.USART1.rdr().read().rdr().bits();
+        let read_byte = (read_full_byte & 0xFF) as u8;
+        critical_section::with(|cs| {
+            USART1_BUFFER.borrow_ref_mut(cs)
+                .write(read_byte);
+        });
+    }
 }
