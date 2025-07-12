@@ -74,9 +74,12 @@ impl<T, const SIZE: usize> RingBuffer<T, SIZE> {
         }
 
         let value = unsafe {
-            self.buffer[self.read_pos].assume_init_read()
+            // replace with uninit to help miri catch soundness violations
+            core::mem::replace(
+                &mut self.buffer[self.read_pos],
+                MaybeUninit::uninit(),
+            ).assume_init()
         };
-        self.buffer[self.read_pos] = MaybeUninit::uninit();
         self.read_pos = (self.read_pos + 1) % SIZE;
         Some(value)
     }
@@ -355,5 +358,41 @@ mod tests {
         assert_eq!(buf.len(), 1);
         assert_eq!(buf.read(), Some(6));
         assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    pub fn test_clone() {
+        let mut buf = new_buffer();
+        assert_eq!(buf.write(3), true);
+        assert_eq!(buf.write(4), true);
+        assert_eq!(buf.write(5), true);
+
+        let mut cloned = buf.clone();
+        assert_eq!(cloned.len(), 3);
+
+        assert_eq!(buf.read(), Some(3));
+        assert_eq!(buf.read(), Some(4));
+        assert_eq!(buf.read(), Some(5));
+        assert_eq!(buf.len(), 0);
+
+        assert_eq!(cloned.read(), Some(3));
+        assert_eq!(cloned.read(), Some(4));
+        assert_eq!(cloned.read(), Some(5));
+        assert_eq!(cloned.len(), 0);
+    }
+
+    #[test]
+    pub fn test_eq() {
+        let mut buf = new_buffer();
+        assert_eq!(buf.write(3), true);
+        assert_eq!(buf.write(4), true);
+        assert_eq!(buf.write(5), true);
+        assert_eq!(buf.read(), Some(3));
+
+        let mut buf2 = new_buffer();
+        assert_eq!(buf2.write(4), true);
+        assert_eq!(buf2.write(5), true);
+
+        assert_eq!(buf, buf2);
     }
 }
