@@ -1,5 +1,6 @@
 [workspace]
 members = [
     "temp-pair-enocean",
+    "tpe-ring-buffer",
 ]
 resolver = "2"

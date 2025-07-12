@@ -2,7 +2,6 @@
 #![no_std]
 
 
-mod ring_buffer;
 mod spi;
 mod uart;
 

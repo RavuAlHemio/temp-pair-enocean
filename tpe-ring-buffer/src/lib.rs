@@ -1,10 +1,13 @@
+#![no_std]
+
+
 use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::mem::MaybeUninit;
 
 
-struct RingBuffer<T, const SIZE: usize> {
+pub struct RingBuffer<T, const SIZE: usize> {
     buffer: [MaybeUninit<T>; SIZE],
     read_pos: usize,
     write_pos: usize,
@@ -187,7 +190,7 @@ impl<T: Ord, const SIZE: usize> Ord for RingBuffer<T, SIZE> {
     }
 }
 
-struct Iter<'a, T, const SIZE: usize> {
+pub struct Iter<'a, T, const SIZE: usize> {
     ring_buffer: &'a RingBuffer<T, SIZE>,
     iter_pos: usize,
 }
