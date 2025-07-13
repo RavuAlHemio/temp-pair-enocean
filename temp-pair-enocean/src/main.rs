@@ -13,6 +13,7 @@ use cortex_m_rt::entry;
 use stm32f7::stm32f745::Peripherals;
 use stm32f7::stm32f745::spi1::cr1::BR;
 
+use crate::i2c::{I2c, I2c1, I2cAddress};
 use crate::spi::{Spi, Spi1, SpiMode};
 use crate::uart::{Uart, Usart2, Usart3};
 
@@ -251,6 +252,7 @@ const fn divide_u32_to_u16_round(dividend: u32, divisor: u32) -> u16 {
 #[entry]
 fn main() -> ! {
     let mut peripherals = unsafe { Peripherals::steal() };
+
     setup_clocks(&mut peripherals);
     setup_pins(&mut peripherals);
 
@@ -259,6 +261,9 @@ fn main() -> ! {
     // * SPI1 (flash, 7seg)
     // * USART2 (EnOcean)
     // * USART3 (debugging)
+
+    // not much to set here, hehe
+    I2c1::set_up_as_controller(&peripherals);
 
     // notes on polarity:
     // * 7seg: shift in on rising edge, shift out on falling edge (SPI mode 0)
@@ -291,6 +296,44 @@ fn main() -> ! {
         divide_u32_to_u16_round(16_000_000, 9_600),
     );
 
+    // LED blinky
+    peripherals.RCC.ahb1enr().modify(|_, w| w
+        .gpioaen().enabled() // clock to GPIOA
+    );
+    peripherals.GPIOA.moder().modify(|_, w| w
+        .moder8().output()
+    );
+    peripherals.GPIOA.otyper().modify(|_, w| w
+        .ot8().push_pull()
+    );
+    peripherals.GPIOA.odr().modify(|_, w| w
+        .odr8().high()
+    );
+
+    // 0x00 is actually the broadcast address, but AMS was kinda stupid
+    const ADDR_8800: I2cAddress = I2cAddress::new(0x00).unwrap();
+    const REG_8800_DIGIT0: u8 = 0x01;
+    const REG_8800_SHUTDOWN: u8 = 0x0C;
+    const VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS: u8 = 0x01;
+
+    I2c1::write_data(&peripherals, ADDR_8800, &[REG_8800_SHUTDOWN, VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS]);
+
+    peripherals.GPIOA.odr().modify(|_, w| w
+        .odr8().low()
+    );
+
+    let mut digit0_value: u8 = 0;
     loop {
+        // any serial data to process?
+        let mut enocean_uart_buf = [0u8; 32];
+        let byte_count = Usart2::copy_buffer(&mut enocean_uart_buf);
+        let uart_slice = &enocean_uart_buf[..byte_count];
+
+        peripherals.GPIOA.odr().modify(|_, w| w
+            .odr8().high()
+        );
+
+        I2c1::write_data(&peripherals, ADDR_8800, &[REG_8800_DIGIT0, digit0_value]);
+        digit0_value = digit0_value.wrapping_add(1);
     }
 }

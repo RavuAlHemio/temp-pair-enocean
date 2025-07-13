@@ -10,6 +10,7 @@ pub trait Uart {
     fn get_peripheral(peripherals: &Peripherals) -> &usart1::RegisterBlock;
     fn enable_peripheral_clock(peripherals: &Peripherals);
     fn take_byte() -> Option<u8>;
+    fn copy_buffer(buffer: &mut [u8]) -> usize;
 
     fn set_up(peripherals: &Peripherals, speed_divisor: u16) {
         let uart = Self::get_peripheral(peripherals);
@@ -104,6 +105,22 @@ macro_rules! implement_uart {
                         .read()
                 })
             }
+
+            fn copy_buffer(buffer: &mut [u8]) -> usize {
+                let mut byte_count = 0;
+                critical_section::with(|cs| {
+                    for byte in buffer {
+                        match $buffer_name.borrow_ref_mut(cs).read() {
+                            Some(b) => {
+                                *byte = b;
+                                byte_count += 1;
+                            },
+                            None => break,
+                        }
+                    }
+                });
+                byte_count
+            }
         }
 
         #[interrupt]
@@ -132,4 +149,3 @@ implement_uart!(Usart3, USART3, apb1enr, usart3en, USART3_BUFFER, 32, USART3);
 //implement_uart!(Usart6, USART6, apb2enr, usart6en, USART6_BUFFER, 32, USART6);
 //implement_uart!(Uart7, UART7, apb1enr, uart7en, UART7_BUFFER, 32, UART7);
 //implement_uart!(Uart8, UART8, apb1enr, uart8en, UART8_BUFFER, 32, UART8);
-
