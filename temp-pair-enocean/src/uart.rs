@@ -25,6 +25,8 @@ pub trait Uart {
             .m1().m0() // yes, 8 bits per byte
             .over8().oversampling16() // sample 16 bits, not 8
             .pce().disabled() // no hardware parity calculation
+
+            .rxneie().enabled()
         );
         uart.brr().modify(|_, w| w
             .brr().set(speed_divisor)
@@ -35,6 +37,9 @@ pub trait Uart {
             .rxinv().standard() // reception pin not inverted
             .datainv().positive() // data polarity not inverted
             .msbfirst().clear_bit() // RS232 says least significant byte first
+        );
+        uart.cr3().modify(|_, w| w
+            .ovrdis().disabled() // disable overrun because we don't know what to do anyway
         );
 
         uart.cr1().modify(|_, w| w
@@ -68,38 +73,63 @@ pub trait Uart {
     }
 }
 
-static USART1_BUFFER: Mutex<RefCell<RingBuffer<u8, 32>>> = Mutex::new(RefCell::new(RingBuffer::new()));
 
-pub struct Usart1;
-impl Uart for Usart1 {
-    fn get_peripheral(peripherals: &Peripherals) -> &usart1::RegisterBlock {
-        &*peripherals.USART1
-    }
+macro_rules! implement_uart {
+    (
+        $struct_name:ident,
+        $peripheral_name:ident,
+        $rcc_register:ident,
+        $rcc_field:ident,
+        $buffer_name:ident,
+        $buffer_size:expr,
+        $interrupt_name:ident $(,)?
+    ) => {
+        static $buffer_name: Mutex<RefCell<RingBuffer<u8, $buffer_size>>> = Mutex::new(RefCell::new(RingBuffer::new()));
 
-    fn enable_peripheral_clock(peripherals: &Peripherals) {
-        peripherals.RCC.apb2enr().modify(|_, w| w
-            .usart1en().set_bit()
-        );
-    }
+        pub struct $struct_name;
+        impl Uart for $struct_name {
+            fn get_peripheral(peripherals: &Peripherals) -> &usart1::RegisterBlock {
+                &*peripherals.$peripheral_name
+            }
 
-    fn take_byte() -> Option<u8> {
-        critical_section::with(|cs| {
-            USART1_BUFFER.borrow_ref_mut(cs)
-                .read()
-        })
-    }
+            fn enable_peripheral_clock(peripherals: &Peripherals) {
+                peripherals.RCC.$rcc_register().modify(|_, w| w
+                    .$rcc_field().set_bit()
+                );
+            }
+
+            fn take_byte() -> Option<u8> {
+                critical_section::with(|cs| {
+                    $buffer_name.borrow_ref_mut(cs)
+                        .read()
+                })
+            }
+        }
+
+        #[interrupt]
+        fn $interrupt_name() {
+            let peripherals = unsafe { Peripherals::steal() };
+            let uart = &peripherals.$peripheral_name;
+            let interrupt_state = uart.isr().read();
+            if interrupt_state.rxne().is_data_ready() {
+                let read_full_byte = uart.rdr().read().rdr().bits();
+                let read_byte = (read_full_byte & 0xFF) as u8;
+                critical_section::with(|cs| {
+                    $buffer_name.borrow_ref_mut(cs)
+                        .write(read_byte);
+                });
+            }
+        }
+    };
 }
 
-#[interrupt]
-fn USART1() {
-    let peripherals = unsafe { Peripherals::steal() };
-    let interrupt_state = peripherals.USART1.isr().read();
-    if interrupt_state.rxne().is_data_ready() {
-        let read_full_byte = peripherals.USART1.rdr().read().rdr().bits();
-        let read_byte = (read_full_byte & 0xFF) as u8;
-        critical_section::with(|cs| {
-            USART1_BUFFER.borrow_ref_mut(cs)
-                .write(read_byte);
-        });
-    }
-}
+
+//implement_uart!(Usart1, USART2, apb2enr, usart1en, USART1_BUFFER, 32, USART1);
+implement_uart!(Usart2, USART2, apb1enr, usart2en, USART2_BUFFER, 32, USART2);
+implement_uart!(Usart3, USART3, apb1enr, usart3en, USART3_BUFFER, 32, USART3);
+//implement_uart!(Uart4, UART4, apb1enr, uart4en, UART4_BUFFER, 32, UART4);
+//implement_uart!(Uart5, UART5, apb1enr, uart5en, UART5_BUFFER, 32, UART5);
+//implement_uart!(Usart6, USART6, apb2enr, usart6en, USART6_BUFFER, 32, USART6);
+//implement_uart!(Uart7, UART7, apb1enr, uart7en, UART7_BUFFER, 32, UART7);
+//implement_uart!(Uart8, UART8, apb1enr, uart8en, UART8_BUFFER, 32, UART8);
+
