@@ -167,7 +167,7 @@ fn setup_pins(peripherals: &mut Peripherals) {
     );
     peripherals.GPIOB.afrh().modify(|_, w| w
         .afrh10().af4() // PB10 to I2C2 SCL
-        .afrh11().af4() // PB10 to I2C2 SDA
+        .afrh11().af4() // PB11 to I2C2 SDA
     );
     peripherals.GPIOD.afrh().modify(|_, w| w
         .afrh8().af7() // PD8 to USART3 Tx

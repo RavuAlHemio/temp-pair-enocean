@@ -2,9 +2,29 @@ use stm32f7::stm32f745::i2c1;
 use stm32f7::stm32f745::Peripherals;
 
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct I2cAddress(u8);
+impl I2cAddress {
+    pub const fn new(address: u8) -> Option<Self> {
+        if address & 0b1000_0000 != 0 {
+            None
+        } else {
+            Some(Self(address))
+        }
+    }
+
+    pub const fn as_u8(&self) -> u8 {
+        self.0
+    }
+}
+
+
 pub trait I2c {
     fn get_peripheral(peripherals: &Peripherals) -> &i2c1::RegisterBlock;
     fn enable_peripheral_clock(peripherals: &Peripherals);
+
+    // (SDA and SCL pins are both high, i.e. have their bits in GPIO IDR set)
+    fn bus_is_idle(peripherals: &Peripherals) -> bool;
 
     fn set_up_as_controller(peripherals: &Peripherals) {
         let i2c = Self::get_peripheral(peripherals);
@@ -51,4 +71,125 @@ pub trait I2c {
             .pe().enabled()
         );
     }
+
+    fn write_data(peripherals: &Peripherals, address: I2cAddress, data: &[u8]) {
+        let i2c = Self::get_peripheral(peripherals);
+
+        assert!(data.len() <= 0xFF);
+
+        // set address and write bit
+        i2c.cr2().modify(|_, w| w
+            .sadd().set(address.as_u8() as u16)
+            .rd_wrn().write() // we are writing
+            .nbytes().set(data.len() as u8)
+            .reload().clear_bit() // no reloading after 255 bytes
+            .autoend().clear_bit() // we will issue the STOP condition ourselves
+        );
+
+        // wait until bus is idle
+        // (SDA and SCL pins both have their bits in GPIO IDR set)
+        while !Self::bus_is_idle(peripherals) {
+        }
+
+        // go go go!
+        i2c.cr2().modify(|_, w| w
+            .start().set_bit()
+        );
+
+        for &byte in data {
+            // wait until the write register is empty
+            while i2c.isr().read().txe().is_not_empty() {
+            }
+
+            // write
+            i2c.txdr().modify(|_, w| w
+                .txdata().set(byte)
+            );
+        }
+
+        // wait until the write register is empty
+        while i2c.isr().read().txe().is_not_empty() {
+        }
+
+        // wait until the transfer is complete
+        while i2c.isr().read().tc().is_not_complete() {
+        }
+
+        // we are done
+        i2c.cr2().modify(|_, w| w
+            .stop().set_bit()
+        );
+    }
+
+    fn read_data(peripherals: &Peripherals, address: I2cAddress, data: &mut [u8]) {
+        let i2c = Self::get_peripheral(peripherals);
+
+        assert!(data.len() <= 0xFF);
+
+        // set address and write bit
+        i2c.cr2().modify(|_, w| w
+            .sadd().set(address.as_u8() as u16)
+            .rd_wrn().read() // we are reading
+            .nbytes().set(data.len() as u8)
+            .reload().clear_bit() // no reloading after 255 bytes
+            .autoend().clear_bit() // we will issue the STOP condition ourselves
+        );
+
+        // wait until bus is idle
+        while !Self::bus_is_idle(peripherals) {
+        }
+
+        // go go go!
+        i2c.cr2().modify(|_, w| w
+            .start().set_bit()
+        );
+
+        for byte in data {
+            // wait until the read register is full
+            while i2c.isr().read().rxne().is_empty() {
+            }
+            *byte = i2c.rxdr().read().rxdata().bits();
+        }
+
+        // wait until transfer is complete
+        while i2c.isr().read().tc().is_not_complete() {
+        }
+
+        // we are done
+        i2c.cr2().modify(|_, w| w
+            .stop().set_bit()
+        );
+    }
 }
+
+macro_rules! implement_i2c {
+    (
+        $struct_name:ident,
+        $peripheral_name:ident,
+        $rcc_enable_register:ident,
+        $rcc_field:ident,
+        $gpio_peripheral:ident,
+        $sda_pin_idr:ident,
+        $scl_pin_idr:ident $(,)?
+    ) => {
+        pub struct $struct_name;
+        impl I2c for $struct_name {
+            fn get_peripheral(peripherals: &Peripherals) -> &i2c1::RegisterBlock {
+                &*peripherals.$peripheral_name
+            }
+
+            fn enable_peripheral_clock(peripherals: &Peripherals) {
+                peripherals.RCC.$rcc_enable_register().modify(|_, w| w
+                    .$rcc_field().set_bit()
+                );
+            }
+
+            fn bus_is_idle(peripherals: &Peripherals) -> bool {
+                let pin_status = peripherals.$gpio_peripheral.idr().read();
+                pin_status.$sda_pin_idr().is_high() && pin_status.$scl_pin_idr().is_high()
+            }
+        }
+    };
+}
+
+implement_i2c!(I2c1, I2C1, apb1enr, i2c1en, GPIOB, idr11, idr10);

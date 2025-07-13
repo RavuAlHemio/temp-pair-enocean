@@ -78,7 +78,7 @@ macro_rules! implement_uart {
     (
         $struct_name:ident,
         $peripheral_name:ident,
-        $rcc_register:ident,
+        $rcc_enable_register:ident,
         $rcc_field:ident,
         $buffer_name:ident,
         $buffer_size:expr,
@@ -93,7 +93,7 @@ macro_rules! implement_uart {
             }
 
             fn enable_peripheral_clock(peripherals: &Peripherals) {
-                peripherals.RCC.$rcc_register().modify(|_, w| w
+                peripherals.RCC.$rcc_enable_register().modify(|_, w| w
                     .$rcc_field().set_bit()
                 );
             }
