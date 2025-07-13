@@ -10,6 +10,10 @@ use core::panic::PanicInfo;
 
 use cortex_m_rt::entry;
 use stm32f7::stm32f745::Peripherals;
+use stm32f7::stm32f745::spi1::cr1::BR;
+
+use crate::spi::{Spi, Spi1, SpiMode};
+use crate::uart::{Uart, Usart2, Usart3};
 
 
 pub const CLOCK_SPEED_HZ: u32 = 16_000_000;
@@ -236,11 +240,55 @@ fn setup_pins(peripherals: &mut Peripherals) {
 }
 
 
+const fn divide_u32_to_u16_round(dividend: u32, divisor: u32) -> u16 {
+    let quotient = (dividend + (divisor - 1)) / divisor;
+    assert!(quotient < (u16::MAX as u32));
+    quotient as u16
+}
+
+
 #[entry]
 fn main() -> ! {
     let mut peripherals = unsafe { Peripherals::steal() };
     setup_clocks(&mut peripherals);
     setup_pins(&mut peripherals);
+
+    // set up peripherals:
+    // * I2C2 (buttons & LEDs, light sensor)
+    // * SPI1 (flash, 7seg)
+    // * USART2 (EnOcean)
+    // * USART3 (debugging)
+
+    // notes on polarity:
+    // * 7seg: shift in on rising edge, shift out on falling edge (SPI mode 0)
+    // * flash: SPI mode 0 or 3 (sampled when chip select is pulled low)
+    //
+    // notes on speed:
+    // * speed divisor must be at least 2 => we go from 16 MHz to 8 MHz
+    // * 7seg: max 30 MHz with standalone operation, max 15 MHz in cascade => OK
+    // * flash: slowest command is 0x03 at 40 MHz => OK
+    //
+    // notes on bit order:
+    // * 7seg: bits get shifted in from LSB side, fall out of MSB side => MSB first
+    // * flash: MSB first
+    Spi1::set_up_as_controller(
+        &peripherals,
+        BR::Div2,
+        SpiMode::WriteFallingOrCsReadRising,
+        false,
+    );
+
+    // speed is always 57_600 b/s
+    Usart2::set_up(
+        &peripherals,
+        divide_u32_to_u16_round(16_000_000, 57_600),
+    );
+
+    // use the venerable 9600 b/s
+    Usart3::set_up(
+        &peripherals,
+        divide_u32_to_u16_round(16_000_000, 9_600),
+    );
 
     loop {
     }

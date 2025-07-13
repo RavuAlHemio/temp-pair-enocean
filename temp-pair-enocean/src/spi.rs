@@ -44,10 +44,6 @@ pub trait Spi {
     fn get_peripheral(peripherals: &Peripherals) -> &spi1::RegisterBlock;
     fn enable_peripheral_clock(peripherals: &Peripherals);
 
-
-    // notes on polarity:
-    // 7seg: shift in on rising edge, shift out on falling edge (SPI mode 0)
-    // flash: SPI mode 0 or 3 (sampled when chip select is pulled low)
     fn set_up_as_controller(peripherals: &Peripherals, speed_divisor: BR, mode: SpiMode, lsb_first: bool) {
         let spi = Self::get_peripheral(peripherals);
 
