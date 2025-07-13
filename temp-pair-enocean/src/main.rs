@@ -2,6 +2,7 @@
 #![no_std]
 
 
+mod i2c;
 mod spi;
 mod uart;
 
