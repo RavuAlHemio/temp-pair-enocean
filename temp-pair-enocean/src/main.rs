@@ -175,7 +175,7 @@ fn setup_pins(peripherals: &mut Peripherals) {
         .afrh9().af7() // PD9 to USART3 Rx
     );
 
-    // set push-pull on output ports
+    // set push-pull on output ports except I2C
     peripherals.GPIOA.otyper().modify(|_, w| w
         .ot2().push_pull()
         .ot3().push_pull()
@@ -185,8 +185,8 @@ fn setup_pins(peripherals: &mut Peripherals) {
     );
     peripherals.GPIOB.otyper().modify(|_, w| w
         .ot0().push_pull()
-        .ot10().push_pull()
-        .ot11().push_pull()
+        .ot10().open_drain()
+        .ot11().open_drain()
     );
     peripherals.GPIOC.otyper().modify(|_, w| w
         .ot6().push_pull()
@@ -335,5 +335,10 @@ fn main() -> ! {
 
         I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_DIGIT0, digit0_value]);
         digit0_value = digit0_value.wrapping_add(1);
+
+        // wait a bit
+        for _ in 0..128*1024 {
+            cortex_m::asm::nop();
+        }
     }
 }
