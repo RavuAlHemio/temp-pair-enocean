@@ -176,4 +176,4 @@ macro_rules! implement_i2c {
     };
 }
 
-implement_i2c!(I2c1, I2C1, apb1enr, i2c1en);
+implement_i2c!(I2c2, I2C2, apb1enr, i2c2en);

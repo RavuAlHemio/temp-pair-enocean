@@ -13,7 +13,7 @@ use cortex_m_rt::entry;
 use stm32f7::stm32f745::Peripherals;
 use stm32f7::stm32f745::spi1::cr1::BR;
 
-use crate::i2c::{I2c, I2c1, I2cAddress};
+use crate::i2c::{I2c, I2c2, I2cAddress};
 use crate::spi::{Spi, Spi1, SpiMode};
 use crate::uart::{Uart, Usart2, Usart3};
 
@@ -263,7 +263,7 @@ fn main() -> ! {
     // * USART3 (debugging)
 
     // not much to set here, hehe
-    I2c1::set_up_as_controller(&peripherals);
+    I2c2::set_up_as_controller(&peripherals);
 
     // notes on polarity:
     // * 7seg: shift in on rising edge, shift out on falling edge (SPI mode 0)
@@ -316,7 +316,7 @@ fn main() -> ! {
     const REG_8800_SHUTDOWN: u8 = 0x0C;
     const VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS: u8 = 0x01;
 
-    I2c1::write_data(&peripherals, ADDR_8800, &[REG_8800_SHUTDOWN, VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS]);
+    I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SHUTDOWN, VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS]);
 
     peripherals.GPIOA.odr().modify(|_, w| w
         .odr8().low()
@@ -333,7 +333,7 @@ fn main() -> ! {
             .odr8().high()
         );
 
-        I2c1::write_data(&peripherals, ADDR_8800, &[REG_8800_DIGIT0, digit0_value]);
+        I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_DIGIT0, digit0_value]);
         digit0_value = digit0_value.wrapping_add(1);
     }
 }
