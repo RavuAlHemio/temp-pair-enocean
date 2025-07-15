@@ -10,6 +10,4 @@ If ($LASTEXITCODE -ne 0) {
 
 & 'C:\Program Files\OpenOCD\bin\openocd.exe' `
     -c "source mikroe-click4-stm32f74.cfg" `
-    -c "init" `
-    -c "program temp-pair-enocean.bin 0x08000000 verify" `
-    -c "shutdown"
+    -c "program temp-pair-enocean.bin 0x08000000 verify reset exit"
