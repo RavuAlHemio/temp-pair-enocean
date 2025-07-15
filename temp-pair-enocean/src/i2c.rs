@@ -23,9 +23,6 @@ pub trait I2c {
     fn get_peripheral(peripherals: &Peripherals) -> &i2c1::RegisterBlock;
     fn enable_peripheral_clock(peripherals: &Peripherals);
 
-    // (SDA and SCL pins are both high, i.e. have their bits in GPIO IDR set)
-    fn bus_is_idle(peripherals: &Peripherals) -> bool;
-
     fn set_up_as_controller(peripherals: &Peripherals) {
         let i2c = Self::get_peripheral(peripherals);
 
@@ -87,8 +84,7 @@ pub trait I2c {
         );
 
         // wait until bus is idle
-        // (SDA and SCL pins both have their bits in GPIO IDR set)
-        while !Self::bus_is_idle(peripherals) {
+        while i2c.isr().read().busy().is_busy() {
         }
 
         // go go go!
@@ -105,10 +101,6 @@ pub trait I2c {
             i2c.txdr().modify(|_, w| w
                 .txdata().set(byte)
             );
-        }
-
-        // wait until the write register is empty
-        while i2c.isr().read().txe().is_not_empty() {
         }
 
         // wait until the transfer is complete
@@ -136,7 +128,7 @@ pub trait I2c {
         );
 
         // wait until bus is idle
-        while !Self::bus_is_idle(peripherals) {
+        while i2c.isr().read().busy().is_busy() {
         }
 
         // go go go!
@@ -167,10 +159,7 @@ macro_rules! implement_i2c {
         $struct_name:ident,
         $peripheral_name:ident,
         $rcc_enable_register:ident,
-        $rcc_field:ident,
-        $gpio_peripheral:ident,
-        $sda_pin_idr:ident,
-        $scl_pin_idr:ident $(,)?
+        $rcc_field:ident $(,)?
     ) => {
         pub struct $struct_name;
         impl I2c for $struct_name {
@@ -183,13 +172,8 @@ macro_rules! implement_i2c {
                     .$rcc_field().set_bit()
                 );
             }
-
-            fn bus_is_idle(peripherals: &Peripherals) -> bool {
-                let pin_status = peripherals.$gpio_peripheral.idr().read();
-                pin_status.$sda_pin_idr().is_high() && pin_status.$scl_pin_idr().is_high()
-            }
         }
     };
 }
 
-implement_i2c!(I2c1, I2C1, apb1enr, i2c1en, GPIOB, idr11, idr10);
+implement_i2c!(I2c1, I2C1, apb1enr, i2c1en);
