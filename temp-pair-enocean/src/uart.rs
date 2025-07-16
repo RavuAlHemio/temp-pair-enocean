@@ -150,7 +150,7 @@ macro_rules! implement_uart {
 
 
 //implement_uart!(Usart1, USART2, apb2enr, usart1en, USART1_BUFFER, 32, USART1);
-implement_uart!(Usart2, USART2, apb1enr, usart2en, USART2_BUFFER, 32, USART2);
+implement_uart!(Usart2, USART2, apb1enr, usart2en, USART2_BUFFER, 128, USART2);
 implement_uart!(Usart3, USART3, apb1enr, usart3en, USART3_BUFFER, 32, USART3);
 //implement_uart!(Uart4, UART4, apb1enr, uart4en, UART4_BUFFER, 32, UART4);
 //implement_uart!(Uart5, UART5, apb1enr, uart5en, UART5_BUFFER, 32, UART5);

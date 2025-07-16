@@ -2,6 +2,8 @@
 #![no_std]
 
 
+mod crc8;
+mod enocean;
 mod i2c;
 mod spi;
 mod uart;
@@ -351,25 +353,6 @@ fn main() -> ! {
     );
 
     loop {
-        // any serial data to process?
-        let mut enocean_uart_buf = [0u8; 32];
-        let byte_count = Usart2::copy_buffer(&mut enocean_uart_buf);
-        let uart_slice = &enocean_uart_buf[..byte_count];
-        if uart_slice.len() == 0 {
-            continue;
-        }
-
-        // spit it out on the 8800
-        let mut all_digits = [REG_8800_DIGIT0, 0, 0, 0, 0, 0, 0, 0, 0];
-        for (all_digit, uart_byte) in all_digits.iter_mut().skip(1).zip(uart_slice.iter()) {
-            *all_digit = *uart_byte;
-        }
-
-        I2c2::write_data(&peripherals, ADDR_8800, &all_digits);
-
-        // wait a bit
-        for _ in 0..128*1024 {
-            cortex_m::asm::nop();
-        }
+        crate::enocean::process_one_packet(&peripherals);
     }
 }
