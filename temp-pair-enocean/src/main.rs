@@ -239,6 +239,16 @@ fn setup_pins(peripherals: &mut Peripherals) {
         .moder7().output() // reset flash chip
         .moder8().output() // flash chip select for SPI1
     );
+
+    // set UART2 and I2C ports to fast
+    peripherals.GPIOA.ospeedr().modify(|_, w| w
+        .ospeedr2().high_speed()
+        .ospeedr3().high_speed()
+    );
+    peripherals.GPIOB.ospeedr().modify(|_, w| w
+        .ospeedr10().high_speed()
+        .ospeedr11().high_speed()
+    );
 }
 
 
