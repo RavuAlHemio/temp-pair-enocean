@@ -135,32 +135,7 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
                 let _ = Usart2::take_byte();
             }
 
-            /*
-            // nothing to do ("S")
-            I2c2::write_data(peripherals, I2cAddress::new(0x00).unwrap(), &[
-                0x01,
-                0b0111_1110,
-                0b1000_0001,
-                0b1000_0000,
-                0b0111_1110,
-                0b0000_0001,
-                0b0000_0001,
-                0b1000_0001,
-                0b0111_1110,
-            ]);
-            */
-
-            // output full packet
-            let mut full_packet = [0x01, 0, 0, 0, 0, 0, 0, 0, 0];
-            let full_packet_data_len = full_packet[1..].len();
-            if full_packet_data_len <= original_slice.len() {
-                full_packet[1..].copy_from_slice(&original_slice[..full_packet_data_len]);
-            } else {
-                full_packet[1..1+original_slice.len()].copy_from_slice(original_slice);
-            }
-
-            I2c2::write_data(peripherals, I2cAddress::new(0x00).unwrap(), &full_packet);
-
+            // there is no packet
             return;
         },
     };
@@ -181,18 +156,7 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
     // [6] crc8d
     // = 7 bytes
     if current_slice.len() < 7 {
-        // not enough; try again later ("B")
-        I2c2::write_data(peripherals, I2cAddress::new(0x00).unwrap(), &[
-            0x01,
-            0b1111_1110,
-            0b1000_0001,
-            0b1000_0001,
-            0b1111_1110,
-            0b1000_0001,
-            0b1000_0001,
-            0b1000_0001,
-            0b1111_1110,
-        ]);
+        // not enough; try again later
         return;
     }
 
@@ -201,19 +165,8 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
     if calculated_crc8h != current_slice[5] {
         // not actually the header
 
-        // eat the sync byte and go around ("C")
+        // eat the sync byte and go around
         let _ = Usart2::take_byte();
-        I2c2::write_data(peripherals, I2cAddress::new(0x00).unwrap(), &[
-            0x01,
-            0b0111_1110,
-            0b1000_0001,
-            0b1000_0000,
-            0b1000_0000,
-            0b1000_0000,
-            0b1000_0000,
-            0b1000_0001,
-            0b0111_1110,
-        ]);
         return;
     }
 
@@ -225,18 +178,7 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
 
     // do we still have enough bytes?
     if current_slice.len() < 7 + data_length + optional_length {
-        // no; try again later ("L")
-        I2c2::write_data(peripherals, I2cAddress::new(0x00).unwrap(), &[
-            0x01,
-            0b1000_0000,
-            0b1000_0000,
-            0b1000_0000,
-            0b1000_0000,
-            0b1000_0000,
-            0b1000_0000,
-            0b1000_0000,
-            0b1111_1111,
-        ]);
+        // no; try again later
         return;
     }
 
@@ -246,19 +188,8 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
     if calculated_crc8d != current_slice[6+data_length+optional_length] {
         // nope
 
-        // eat the sync byte and go around ("D")
+        // eat the sync byte and go around
         let _ = Usart2::take_byte();
-        I2c2::write_data(peripherals, I2cAddress::new(0x00).unwrap(), &[
-            0x01,
-            0b1111_1110,
-            0b1000_0001,
-            0b1000_0001,
-            0b1000_0001,
-            0b1000_0001,
-            0b1000_0001,
-            0b1000_0001,
-            0b1111_1110,
-        ]);
         return;
     }
 
@@ -273,18 +204,7 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
     match PacketType::from_base_type(current_slice[4]) {
         PacketType::Event => {
             if data_slice.len() < 1 {
-                // not a valid event ("E")
-                I2c2::write_data(peripherals, I2cAddress::new(0x00).unwrap(), &[
-                    0x01,
-                    0b1111_1111,
-                    0b1000_0000,
-                    0b1000_0000,
-                    0b1111_1110,
-                    0b1000_0000,
-                    0b1000_0000,
-                    0b1000_0000,
-                    0b1111_1111,
-                ]);
+                // not a valid event
                 return;
             }
 
