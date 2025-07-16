@@ -127,8 +127,7 @@ macro_rules! implement_uart {
         fn $interrupt_name() {
             let peripherals = unsafe { Peripherals::steal() };
             let uart = &peripherals.$peripheral_name;
-            let interrupt_state = uart.isr().read();
-            if interrupt_state.rxne().is_data_ready() {
+            while uart.isr().read().rxne().is_data_ready() {
                 let read_full_byte = uart.rdr().read().rdr().bits();
                 let read_byte = (read_full_byte & 0xFF) as u8;
                 critical_section::with(|cs| {
