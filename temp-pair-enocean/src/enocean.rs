@@ -11,6 +11,8 @@ use crate::uart::{Uart, Usart2};
 
 const SYNC_BYTE: u8 = 0x55;
 
+type EnoceanUart = Usart2;
+
 
 #[derive(Clone, Copy, Debug)]
 #[from_to_other(base_type = u8, derive_compare = "as_int")]
@@ -112,7 +114,7 @@ enum CommonCommandType {
 pub(crate) fn process_one_packet(peripherals: &Peripherals) {
     // copy the current buffer contents
     let mut current_buffer = [0u8; 128];
-    let original_size = Usart2::copy_buffer(&mut current_buffer);
+    let original_size = EnoceanUart::copy_buffer(&mut current_buffer);
     if original_size == 0 {
         // empty buffer
         return;
@@ -126,13 +128,13 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
         Some(sbi) => {
             // read the bytes before it, removing them from the ring buffer
             for _ in 0..sbi {
-                let _ = Usart2::take_byte();
+                let _ = EnoceanUart::take_byte();
             }
         },
         None => {
             // remove as many bytes as are in our slice
             for _ in 0..original_slice.len() {
-                let _ = Usart2::take_byte();
+                let _ = EnoceanUart::take_byte();
             }
 
             // there is no packet
@@ -141,7 +143,7 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
     };
 
     // copy again now that we have gotten rid of a few bytes
-    let current_size = Usart2::copy_buffer(&mut current_buffer);
+    let current_size = EnoceanUart::copy_buffer(&mut current_buffer);
     let current_slice = &current_buffer[..current_size];
 
     // do we have enough bytes in the buffer for one whole packet?
@@ -166,7 +168,7 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
         // not actually the header
 
         // eat the sync byte and go around
-        let _ = Usart2::take_byte();
+        let _ = EnoceanUart::take_byte();
         return;
     }
 
@@ -189,13 +191,13 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
         // nope
 
         // eat the sync byte and go around
-        let _ = Usart2::take_byte();
+        let _ = EnoceanUart::take_byte();
         return;
     }
 
     // eat the whole packet
     for _ in 0..7+data_length+optional_length {
-        let _ = Usart2::take_byte();
+        let _ = EnoceanUart::take_byte();
     }
 
     let (data_slice, optional_data_slice) = full_data_slice.split_at(data_length);
@@ -227,7 +229,7 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
                     set_transparent_mode_packet[5] = crc8h;
                     set_transparent_mode_packet[8] = crc8d;
 
-                    Usart2::write(peripherals, &set_transparent_mode_packet);
+                    EnoceanUart::write(peripherals, &set_transparent_mode_packet);
                 },
                 _ => {},
             }
