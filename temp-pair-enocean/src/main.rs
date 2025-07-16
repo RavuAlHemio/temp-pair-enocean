@@ -255,8 +255,8 @@ fn setup_pins(peripherals: &mut Peripherals) {
 
 
 const fn divide_u32_to_u16_round(dividend: u32, divisor: u32) -> u16 {
-    let quotient = (dividend + (divisor - 1)) / divisor;
-    assert!(quotient < (u16::MAX as u32));
+    let quotient = (dividend + (divisor / 2)) / divisor;
+    assert!(quotient <= (u16::MAX as u32));
     quotient as u16
 }
 
