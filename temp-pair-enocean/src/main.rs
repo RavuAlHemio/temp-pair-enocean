@@ -325,23 +325,37 @@ fn main() -> ! {
     const REG_8800_DIGIT0: u8 = 0x01;
     const REG_8800_SHUTDOWN: u8 = 0x0C;
     const VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS: u8 = 0x01;
-const REG_8800_SCANLIMIT: u8 = 0x0B;
+    const REG_8800_SCANLIMIT: u8 = 0x0B;
     const VALUE_8800_SCANLIMIT_ALL_DIGITS: u8 = 0b111;
 
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SHUTDOWN, VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS]);
-I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SCANLIMIT, VALUE_8800_SCANLIMIT_ALL_DIGITS]);
+    I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SCANLIMIT, VALUE_8800_SCANLIMIT_ALL_DIGITS]);
 
     peripherals.GPIOA.odr().modify(|_, w| w
         .odr8().low()
     );
 
-    let mut digit0_value: u8 = 0;
+    // pull PC15 low to reset EnOcean module
+    peripherals.GPIOC.odr().modify(|_, w| w
+        .odr15().low()
+    );
+
+    // wait a bit
+    for _ in 0..4*1024*1024 {
+        cortex_m::asm::nop();
+    }
+
+    // pull PC15 high to unreset EnOcean module
+    peripherals.GPIOC.odr().modify(|_, w| w
+        .odr15().high()
+    );
+
     loop {
         // any serial data to process?
         let mut enocean_uart_buf = [0u8; 32];
         let byte_count = Usart2::copy_buffer(&mut enocean_uart_buf);
         let uart_slice = &enocean_uart_buf[..byte_count];
-if uart_slice.len() == 0 {
+        if uart_slice.len() == 0 {
             continue;
         }
 
