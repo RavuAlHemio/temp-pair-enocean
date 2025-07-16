@@ -1,7 +1,8 @@
 use core::cell::RefCell;
 
+use cortex_m::peripheral::NVIC;
 use critical_section::Mutex;
-use stm32f7::stm32f745::Peripherals;
+use stm32f7::stm32f745::{Interrupt, Peripherals};
 use stm32f7::stm32f745::{interrupt, usart1};
 use tpe_ring_buffer::RingBuffer;
 
@@ -9,6 +10,7 @@ use tpe_ring_buffer::RingBuffer;
 pub trait Uart {
     fn get_peripheral(peripherals: &Peripherals) -> &usart1::RegisterBlock;
     fn enable_peripheral_clock(peripherals: &Peripherals);
+    fn enable_interrupt();
     fn take_byte() -> Option<u8>;
     fn copy_buffer(buffer: &mut [u8]) -> usize;
 
@@ -19,6 +21,7 @@ pub trait Uart {
 
         // gimme clock
         Self::enable_peripheral_clock(peripherals);
+        Self::enable_interrupt();
 
         // set up
         uart.cr1().modify(|_, w| w
@@ -97,6 +100,12 @@ macro_rules! implement_uart {
                 peripherals.RCC.$rcc_enable_register().modify(|_, w| w
                     .$rcc_field().set_bit()
                 );
+            }
+
+            fn enable_interrupt() {
+                unsafe {
+                    NVIC::unmask(Interrupt::$interrupt_name)
+                }
             }
 
             fn take_byte() -> Option<u8> {
