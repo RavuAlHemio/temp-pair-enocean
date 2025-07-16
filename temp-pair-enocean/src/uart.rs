@@ -83,7 +83,8 @@ macro_rules! implement_uart {
         $struct_name:ident,
         $peripheral_name:ident,
         $rcc_enable_register:ident,
-        $rcc_field:ident,
+        $rcc_enable_field:ident,
+        $rcc_clock_selection_field:ident,
         $buffer_name:ident,
         $buffer_size:expr,
         $interrupt_name:ident $(,)?
@@ -98,7 +99,12 @@ macro_rules! implement_uart {
 
             fn enable_peripheral_clock(peripherals: &Peripherals) {
                 peripherals.RCC.$rcc_enable_register().modify(|_, w| w
-                    .$rcc_field().set_bit()
+                    .$rcc_enable_field().set_bit()
+                );
+
+                // select peripheral clock as clock source
+                peripherals.RCC.dckcfgr2().modify(|_, w| w
+                    .$rcc_clock_selection_field().apb1()
                 );
             }
 
@@ -149,11 +155,11 @@ macro_rules! implement_uart {
 }
 
 
-//implement_uart!(Usart1, USART2, apb2enr, usart1en, USART1_BUFFER, 32, USART1);
-implement_uart!(Usart2, USART2, apb1enr, usart2en, USART2_BUFFER, 128, USART2);
-implement_uart!(Usart3, USART3, apb1enr, usart3en, USART3_BUFFER, 32, USART3);
-//implement_uart!(Uart4, UART4, apb1enr, uart4en, UART4_BUFFER, 32, UART4);
-//implement_uart!(Uart5, UART5, apb1enr, uart5en, UART5_BUFFER, 32, UART5);
-//implement_uart!(Usart6, USART6, apb2enr, usart6en, USART6_BUFFER, 32, USART6);
-//implement_uart!(Uart7, UART7, apb1enr, uart7en, UART7_BUFFER, 32, UART7);
-//implement_uart!(Uart8, UART8, apb1enr, uart8en, UART8_BUFFER, 32, UART8);
+//implement_uart!(Usart1, USART2, apb2enr, usart1en, usart1sel, USART1_BUFFER, 32, USART1);
+implement_uart!(Usart2, USART2, apb1enr, usart2en, usart2sel, USART2_BUFFER, 128, USART2);
+implement_uart!(Usart3, USART3, apb1enr, usart3en, usart3sel, USART3_BUFFER, 32, USART3);
+//implement_uart!(Uart4, UART4, apb1enr, uart4en, uart4sel, UART4_BUFFER, 32, UART4);
+//implement_uart!(Uart5, UART5, apb1enr, uart5en, uart5sel, UART5_BUFFER, 32, UART5);
+//implement_uart!(Usart6, USART6, apb2enr, usart6en, usart5sel, USART6_BUFFER, 32, USART6);
+//implement_uart!(Uart7, UART7, apb1enr, uart7en, uart7sel, UART7_BUFFER, 32, UART7);
+//implement_uart!(Uart8, UART8, apb1enr, uart8en, uart8sel, UART8_BUFFER, 32, UART8);
