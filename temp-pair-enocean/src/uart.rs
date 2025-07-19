@@ -40,10 +40,11 @@ pub trait Uart {
             .txinv().standard() // transmission pin not inverted
             .rxinv().standard() // reception pin not inverted
             .datainv().positive() // data polarity not inverted
-            .msbfirst().clear_bit() // RS232 says least significant byte first
+            .msbfirst().lsb() // RS232 says least significant byte first
         );
         uart.cr3().modify(|_, w| w
             .ovrdis().disabled() // disable overrun because we don't know what to do anyway
+            .onebit().sample3() // sample 3 bits, not 1
         );
 
         uart.cr1().modify(|_, w| w

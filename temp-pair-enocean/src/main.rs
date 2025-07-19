@@ -20,7 +20,7 @@ use crate::spi::{Spi, Spi1, SpiMode};
 use crate::uart::{Uart, Usart2, Usart3};
 
 
-pub const CLOCK_SPEED_HZ: u32 = 16_000_000;
+pub const CLOCK_SPEED_HZ: u32 = 25_000_000;
 
 
 #[panic_handler]
@@ -51,53 +51,72 @@ fn handle_panic(_info: &PanicInfo) -> ! {
 ///                    │╒═══════╕
 ///                    └┤ PPRE2 ├──┐ APB2 (max. 108 MHz)
 ///                     │    /1 │  ╳
-///                     └───────┘ ┌┴───────┐
-///                               │ SPI1   │
-///                               │ 16 MHz │
-///                               └────────┘
+///                     └───────┘ ┌┴─────────┐
+///                               │ SPI1     │
+///                               │ 16 MHz   │
+///                               ╞═  ═  ═  ═╡
+///                               │ PRESC /2 │
+///                               │ 8 MHz    │
+///                               └──────────┘
 /// ```
+///
+/// The board has an external oscillator Y1 with 25 MHz.
 ///
 /// The EnOncean module (on USART2) requires 57600 b/s, so we must solve:
 ///
-/// 57 600 b/s = 16 000 000 b Hz / USARTDIV
+/// 57 600 b/s = 25 000 000 b Hz / USARTDIV
 ///
-/// which gives 277.7...; we can fit 278 (0x116) in a 16-bit register.
+/// which gives 434.027...; we can fit 434 (0x1B2) in a 16-bit register.
 ///
-/// The emergency USART we can configure for any speed; even a USARTDIV of 1666 (0x682) for the
+/// The emergency USART we can configure for any speed; even a USARTDIV of 2604 (0xA2C) for the
 /// venerable 9600 b/s fits.
 ///
-/// For I2C, honestly, just steal Table 187 from the reference manual:
+/// For I2C, I use the I2C timing calculator at https://ondrahosek.com/stm32-i2c-timing-calc/ with:
 ///
-/// PRESC = 0x3, SCLL = 0xC7, SCLH = 0xC3, SDADEL = 0x2, SCLDEL = 0x4
+/// * target I2C bus frequency = 100 kHz
+/// * I2C peripheral clock frequency = 25000 kHz
+/// * I2C mode = standard
+/// * analog filter = yes
+/// * digital filter count = 15
+/// * rise time = 1000 ns
+/// * fall time = 300 ns
 ///
-/// For SPI1, we get power-of-two prescalers from /2 to /256. The 7-segment driver chip (TLC5947)
-/// allows up to 30 MHz (15 MHz in 50%-duty cascade operation) and the flash chip (AT25FF321A)
-/// absolutely bottoms out at 30 MHz for the slow-read category, so 16 MHz is totally fine.
+/// which gives:
 ///
-/// The board has an external oscillator, though, so let's use that:
+/// PRESC = 1, SDADEL = 0, SCLDEL = 15, SCLL = 49, SCLH = 40
+///
+/// For SPI1, we get power-of-two prescalers from /2 to /256, which means we top out at 12.5 MHz.
+/// The 7-segment driver chip (TLC5947) allows up to 30 MHz (15 MHz in 50%-duty cascade operation)
+/// and the flash chip (AT25FF321A) absolutely bottoms out at 30 MHz for the slow-read category, so
+/// 25 MHz is fine.
+///
+/// Set it all up:
 ///
 /// ```plain
 /// ╭────────╮ ╒══════╕
 /// │ HSE    ├─┤ HPRE ├───┬─────────┬─────────╴╴╴──┐ AHB (max. 216 MHz)
-/// │ 16 MHz │ │   /1 ├┐  │         │              │
+/// │ 25 MHz │ │   /1 ├┐  │         │              │
 /// ╰────────╯ └──────┘│ ┌┴───────┐┌┴───────┐     ┌┴───────┐
 ///                    │ │ SYSCLK ││ GPIOA  │ ... │ GPIOE  │
-///                    │ │ 16 MHz ││ 16 MHz │     │ 16 MHz │
+///                    │ │ 25 MHz ││ 25 MHz │     │ 25 MHz │
 ///                    │ └────────┘└────────┘     └────────┘
 ///                    │╒═══════╕ 
 ///                    ├┤ PPRE1 ├──┬─────────┬─────────┐ APB1 (max. 54 MHz)
 ///                    ││    /1 │  │         │         │
 ///                    │└───────┘ ┌┴───────┐┌┴───────┐┌┴───────┐
 ///                    │          │ USART2 ││ USART3 ││ I2C2   │
-///                    │          │ 16 MHz ││ 16 MHz ││ 16 MHz │
+///                    │          │ 25 MHz ││ 25 MHz ││ 25 MHz │
 ///                    │          └────────┘└────────┘└────────┘
 ///                    │╒═══════╕
 ///                    └┤ PPRE2 ├──┐ APB2 (max. 108 MHz)
 ///                     │    /1 │  │
-///                     └───────┘ ┌┴───────┐
-///                               │ SPI1   │
-///                               │ 16 MHz │
-///                               └────────┘
+///                     └───────┘ ┌┴─────────┐
+///                               │ SPI1     │
+///                               │ 25 MHz   │
+///                               ╞═  ═  ═  ═╡
+///                               │ PRESC /2 │
+///                               │ 12.5 MHz │
+///                               └──────────┘
 /// ```
 fn setup_clocks(peripherals: &mut Peripherals) {
     // start up the external high-speed oscillator (HSE)
@@ -120,7 +139,7 @@ fn setup_clocks(peripherals: &mut Peripherals) {
 
     // set flash wait states
     // we run on 3.3V, which means steps of 30 MHz
-    // 0 MHz < 16 MHz < 30 MHz => 0 wait states
+    // 0 MHz < 25 MHz < 30 MHz => 0 wait states
     peripherals.FLASH.acr().modify(|_, w| w
         .latency().ws0()
     );
@@ -282,7 +301,7 @@ fn main() -> ! {
     // * flash: SPI mode 0 or 3 (sampled when chip select is pulled low)
     //
     // notes on speed:
-    // * speed divisor must be at least 2 => we go from 16 MHz to 8 MHz
+    // * speed divisor must be at least 2 => we go from 25 MHz to 12.5 MHz
     // * 7seg: max 30 MHz with standalone operation, max 15 MHz in cascade => OK
     // * flash: slowest command is 0x03 at 40 MHz => OK
     //
@@ -299,13 +318,13 @@ fn main() -> ! {
     // speed is always 57_600 b/s
     Usart2::set_up(
         &peripherals,
-        divide_u32_to_u16_round(16_000_000, 57_600),
+        divide_u32_to_u16_round(CLOCK_SPEED_HZ, 57_600),
     );
 
     // use the venerable 9600 b/s
     Usart3::set_up(
         &peripherals,
-        divide_u32_to_u16_round(16_000_000, 9_600),
+        divide_u32_to_u16_round(CLOCK_SPEED_HZ, 9_600),
     );
 
     // LED blinky

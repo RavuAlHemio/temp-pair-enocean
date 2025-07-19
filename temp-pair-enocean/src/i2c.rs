@@ -47,20 +47,13 @@ pub trait I2c {
         i2c.cr2().modify(|_, w| w
             .add10().bit7() // 7-bit addresses
         );
-        // calculated speed parameters from values:
-        // target I2C bus frequency: 100 kHz
-        // I2C peripheral clock frequency: 16_000 kHz
-        // I2C mode: standard
-        // analog filter active: yes
-        // digital noise filter count: 15
-        // rise time (ns): 1000
-        // fall time (ns): 300
+        // see comment of crate::setup_clocks for origin of values
         i2c.timingr().modify(|_, w| w
             .presc().set(1)
             .sdadel().set(0)
-            .scldel().set(9)
-            .scll().set(28)
-            .sclh().set(23)
+            .scldel().set(15)
+            .scll().set(49)
+            .sclh().set(40)
         );
 
         // turn on
