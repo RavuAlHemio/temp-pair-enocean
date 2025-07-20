@@ -23,6 +23,11 @@ pub trait Uart {
         Self::enable_peripheral_clock(peripherals);
         Self::enable_interrupt();
 
+        // turn off the UART so we can change a few params
+        uart.cr1().modify(|_, w| w
+            .ue().disabled()
+        );
+
         // set up
         uart.cr1().modify(|_, w| w
             .m0().bit8() // 8 bits per byte
@@ -125,14 +130,10 @@ macro_rules! implement_uart {
             fn copy_buffer(buffer: &mut [u8]) -> usize {
                 let mut byte_count = 0;
                 critical_section::with(|cs| {
-                    for byte in buffer {
-                        match $buffer_name.borrow_ref_mut(cs).read() {
-                            Some(b) => {
-                                *byte = b;
-                                byte_count += 1;
-                            },
-                            None => break,
-                        }
+                    let in_buffer = $buffer_name.borrow_ref(cs);
+                    for (out_byte, in_byte) in buffer.iter_mut().zip(in_buffer.iter()) {
+                        *out_byte = *in_byte;
+                        byte_count += 1;
                     }
                 });
                 byte_count

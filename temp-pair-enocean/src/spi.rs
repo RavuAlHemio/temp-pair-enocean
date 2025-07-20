@@ -52,22 +52,31 @@ pub trait Spi {
         // gimme clock
         Self::enable_peripheral_clock(peripherals);
 
+        // turn off to perform configuration
+        spi.cr1().modify(|_, w| w
+            .spe().disabled()
+        );
+
         // set up
         spi.cr1().modify(|_, w| w
             .br().variant(speed_divisor)
             .cpol().bit(mode.cpol())
             .cpha().bit(mode.cpha())
-            .rxonly().clear_bit() // bidirectional communication
+            .rxonly().full_duplex() // bidirectional communication
             .bidimode().unidirectional() // one line per direction
+            .bidioe().output_disabled() // irrelevant for unidirectional mode
             .lsbfirst().bit(lsb_first)
             .crcen().disabled() // no CRC
-            .ssm().enabled() // chip select pin is controlled by software (and we will control it manually)
+            .crcl().eight_bit() // 8-bit CRC (but actually no CRC)
+            .crcnext().tx_buffer() // next CRC is from Tx buffer (but actually no CRC)
+            .ssm().enabled() // we control the chip select pin
+            .ssi().slave_not_selected() // and currently no chip is selected
             .mstr().master() // controller role
         );
         spi.cr2().modify(|_, w| w
             .ds().eight_bit() // eight bits per transfer
-            .ssoe().disabled() // don't enable chip select (we manage it independently)
-            .nssp().no_pulse() // no chip select pulsing after each byte (we managed it independently anyway)
+            .ssoe().enabled() // enable chip select (although we manage it independently)
+            .nssp().no_pulse() // no chip select pulsing after each byte (we manage it independently anyway)
             .frxth().quarter() // trigger RXNE event if queue is 1/4 full (8 bits)
             .txdmaen().clear_bit() // no DMA when transmitting
             .rxdmaen().clear_bit() // no DMA when receiving
@@ -75,7 +84,7 @@ pub trait Spi {
 
         // turn on
         spi.cr1().modify(|_, w| w
-            .spe().set_bit()
+            .spe().enabled()
         );
     }
 
@@ -85,23 +94,33 @@ pub trait Spi {
     fn communicate_bytes(peripherals: &Peripherals, data: &mut [u8]) {
         let spi = Self::get_peripheral(peripherals);
 
-        // wait until previous transfer is complete
-        while spi.sr().read().bsy().bit_is_set() {
-        }
+        // pretend that chip select is low
+        spi.cr1().modify(|_, w| w
+            .ssi().slave_selected()
+        );
 
         for b in data {
+            // wait until previous transfer is complete
+            while spi.sr().read().txe().is_not_empty() {
+            }
+
             // write a byte
             spi.dr().modify(|_, w| w
                 .dr().set(*b as u16)
             );
 
-            // wait for the transfer to complete
-            while spi.sr().read().bsy().bit_is_set() {
+            // wait until we have something to read
+            while spi.sr().read().rxne().is_empty() {
             }
 
             // read a byte
             *b = (spi.dr().read().dr().bits() & 0xFF) as u8;
         }
+
+        // pretend that chip select is high
+        spi.cr1().modify(|_, w| w
+            .ssi().slave_not_selected()
+        );
     }
 }
 

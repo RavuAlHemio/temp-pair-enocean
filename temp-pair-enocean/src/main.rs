@@ -167,6 +167,7 @@ fn setup_clocks(peripherals: &mut Peripherals) {
         .gpiocen().enabled()
         .gpioden().enabled()
         .gpioeen().enabled()
+        .gpiogen().enabled()
     );
     peripherals.RCC.apb1enr().modify(|_, w| w
         .usart2en().enabled()
@@ -223,6 +224,9 @@ fn setup_pins(peripherals: &mut Peripherals) {
         .ot7().push_pull()
         .ot8().push_pull()
     );
+    peripherals.GPIOG.otyper().modify(|_, w| w
+        .ot11().push_pull()
+    );
 
     // set pulling on input ports
     peripherals.GPIOB.pupdr().modify(|_, w| w
@@ -260,15 +264,32 @@ fn setup_pins(peripherals: &mut Peripherals) {
         .moder7().output() // reset flash chip
         .moder8().output() // flash chip select for SPI1
     );
+    peripherals.GPIOG.moder().modify(|_, w| w
+        .moder11().output() // reset 7seg (but actually only ClickID)
+    );
 
-    // set UART2 and I2C ports to fast
+    // set UART2, I2C and SPI ports to fast
     peripherals.GPIOA.ospeedr().modify(|_, w| w
         .ospeedr2().high_speed()
         .ospeedr3().high_speed()
+        .ospeedr5().high_speed()
+        .ospeedr6().high_speed()
+        .ospeedr7().high_speed()
     );
     peripherals.GPIOB.ospeedr().modify(|_, w| w
         .ospeedr10().high_speed()
         .ospeedr11().high_speed()
+    );
+
+    // set SPI chip-selects all high
+    peripherals.GPIOB.odr().modify(|_, w| w
+        .odr0().high()
+    );
+    peripherals.GPIOD.odr().modify(|_, w| w
+        .odr13().high()
+    );
+    peripherals.GPIOE.odr().modify(|_, w| w
+        .odr8().high()
     );
 }
 
@@ -310,7 +331,7 @@ fn main() -> ! {
     // * flash: MSB first
     Spi1::set_up_as_controller(
         &peripherals,
-        BR::Div2,
+        BR::Div256,
         SpiMode::WriteFallingOrCsReadRising,
         false,
     );
@@ -341,6 +362,11 @@ fn main() -> ! {
         .odr8().high()
     );
 
+    // turn on 7-seg displays
+    peripherals.GPIOC.odr().modify(|_, w| w
+        .odr6().low()
+    );
+
     // 0x00 is actually the broadcast address, but AMS was kinda stupid
     const ADDR_8800: I2cAddress = I2cAddress::new(0x00).unwrap();
     const REG_8800_DIGIT0: u8 = 0x01;
@@ -351,6 +377,11 @@ fn main() -> ! {
 
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SHUTDOWN, VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS]);
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SCANLIMIT, VALUE_8800_SCANLIMIT_ALL_DIGITS]);
+    I2c2::write_data(&peripherals, ADDR_8800, &[
+        REG_8800_DIGIT0,
+        0x55, 0xAA, 0x55, 0xAA,
+        0x55, 0xAA, 0x55, 0xAA,
+    ]);
 
     peripherals.GPIOA.odr().modify(|_, w| w
         .odr8().low()
@@ -371,7 +402,58 @@ fn main() -> ! {
         .odr15().high()
     );
 
+    let mut counter: u8 = 0;
+    let mut top_display = [0u8; 36];
+    let mut bottom_display = [0u8; 36];
     loop {
         crate::enocean::process_one_packet(&peripherals);
+
+        top_display.fill(0);
+        bottom_display.fill(0);
+
+        // which ones do we activate?
+        let display_selector = counter / 24;
+        let display_bytes = if display_selector == 0 {
+            &mut top_display
+        } else {
+            &mut bottom_display
+        };
+        let segment_on_display = counter % 24;
+        // segment 0: byte 0 to FF, byte 1 to F0
+        // segment 1: byte 1 to 0F, byte 2 to FF
+        // segment 2: byte 3 to FF, byte 4 to F0
+        let start_byte = usize::from((segment_on_display * 3) / 2);
+        if segment_on_display % 2 == 0 {
+            // start_byte to FF, start_byte+1 to F0
+            display_bytes[start_byte] = 0xFF;
+            display_bytes[start_byte+1] = 0xF0;
+        } else {
+            // start_byte to 0F, start_byte+1 to FF
+            display_bytes[start_byte] = 0x0F;
+            display_bytes[start_byte+1] = 0xFF;
+        }
+
+        // transmit
+        peripherals.GPIOD.odr().modify(|_, w| w
+            .odr13().low() // CS1 low
+        );
+        Spi1::communicate_bytes(&peripherals, &mut top_display);
+        peripherals.GPIOD.odr().modify(|_, w| w
+            .odr13().high() // CS1 high
+        );
+        peripherals.GPIOB.odr().modify(|_, w| w
+            .odr0().low() // CS2 low
+        );
+        Spi1::communicate_bytes(&peripherals, &mut bottom_display);
+        peripherals.GPIOB.odr().modify(|_, w| w
+            .odr0().high() // CS2 high
+        );
+
+        // wait a smidge
+        for _ in 0..256*1024 {
+            cortex_m::asm::nop();
+        }
+
+        counter = (counter + 1) % 48;
     }
 }
