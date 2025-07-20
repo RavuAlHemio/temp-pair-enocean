@@ -5,7 +5,9 @@
 mod crc8;
 mod enocean;
 mod i2c;
+mod hmi_display;
 mod spi;
+mod temp_display;
 mod uart;
 
 
@@ -17,6 +19,7 @@ use stm32f7::stm32f745::spi1::cr1::BR;
 
 use crate::i2c::{I2c, I2c2, I2cAddress};
 use crate::spi::{Spi, Spi1, SpiMode};
+use crate::temp_display::TempDisplayState;
 use crate::uart::{Uart, Usart2, Usart3};
 
 
@@ -369,7 +372,6 @@ fn main() -> ! {
 
     // 0x00 is actually the broadcast address, but AMS was kinda stupid
     const ADDR_8800: I2cAddress = I2cAddress::new(0x00).unwrap();
-    const REG_8800_DIGIT0: u8 = 0x01;
     const REG_8800_SHUTDOWN: u8 = 0x0C;
     const VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS: u8 = 0x01;
     const REG_8800_SCANLIMIT: u8 = 0x0B;
@@ -377,11 +379,6 @@ fn main() -> ! {
 
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SHUTDOWN, VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS]);
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SCANLIMIT, VALUE_8800_SCANLIMIT_ALL_DIGITS]);
-    I2c2::write_data(&peripherals, ADDR_8800, &[
-        REG_8800_DIGIT0,
-        0x55, 0xAA, 0x55, 0xAA,
-        0x55, 0xAA, 0x55, 0xAA,
-    ]);
 
     peripherals.GPIOA.odr().modify(|_, w| w
         .odr8().low()
@@ -402,58 +399,170 @@ fn main() -> ! {
         .odr15().high()
     );
 
-    let mut counter: u8 = 0;
-    let mut top_display = [0u8; 36];
-    let mut bottom_display = [0u8; 36];
+    let mut top_display = TempDisplayState::new(true);
+    let mut bottom_display = TempDisplayState::new(false);
+
+    update_displays(&peripherals, &top_display, &bottom_display);
+
     loop {
-        crate::enocean::process_one_packet(&peripherals);
-
-        top_display.fill(0);
-        bottom_display.fill(0);
-
-        // which ones do we activate?
-        let display_selector = counter / 24;
-        let display_bytes = if display_selector == 0 {
-            &mut top_display
-        } else {
-            &mut bottom_display
-        };
-        let segment_on_display = counter % 24;
-        // segment 0: byte 0 to FF, byte 1 to F0
-        // segment 1: byte 1 to 0F, byte 2 to FF
-        // segment 2: byte 3 to FF, byte 4 to F0
-        let start_byte = usize::from((segment_on_display * 3) / 2);
-        if segment_on_display % 2 == 0 {
-            // start_byte to FF, start_byte+1 to F0
-            display_bytes[start_byte] = 0xFF;
-            display_bytes[start_byte+1] = 0xF0;
-        } else {
-            // start_byte to 0F, start_byte+1 to FF
-            display_bytes[start_byte] = 0x0F;
-            display_bytes[start_byte+1] = 0xFF;
+        let packet_result = crate::enocean::process_one_packet(&peripherals);
+        let display_updated = act_upon_one_packet(
+            packet_result,
+            &mut top_display,
+            &mut bottom_display,
+        );
+        if display_updated {
+            update_displays(&peripherals, &top_display, &bottom_display);
         }
-
-        // transmit
-        peripherals.GPIOD.odr().modify(|_, w| w
-            .odr13().low() // CS1 low
-        );
-        Spi1::communicate_bytes(&peripherals, &mut top_display);
-        peripherals.GPIOD.odr().modify(|_, w| w
-            .odr13().high() // CS1 high
-        );
-        peripherals.GPIOB.odr().modify(|_, w| w
-            .odr0().low() // CS2 low
-        );
-        Spi1::communicate_bytes(&peripherals, &mut bottom_display);
-        peripherals.GPIOB.odr().modify(|_, w| w
-            .odr0().high() // CS2 high
-        );
-
-        // wait a smidge
-        for _ in 0..256*1024 {
-            cortex_m::asm::nop();
-        }
-
-        counter = (counter + 1) % 48;
     }
+}
+
+fn act_upon_one_packet(
+    packet_result: crate::enocean::PacketResult,
+    top_display: &mut TempDisplayState,
+    bottom_display: &mut TempDisplayState,
+) -> bool {
+    let mut display_updated = false;
+
+    // needs to be an EnOcean packet
+    let (packet_type, payload) = match packet_result {
+        enocean::PacketResult::Packet { packet_type, payload }
+            => (packet_type, payload),
+        _ => return display_updated,
+    };
+
+    // needs to be an ERP1 packet
+    if packet_type != crate::enocean::PacketType::RadioErp1 {
+        return display_updated;
+    }
+
+    // must have at least 1 byte for packet type
+    let payload_data = payload.data();
+    if payload_data.len() < 1 {
+        return display_updated;
+    }
+
+    match payload_data[0] {
+        0xF6|0xD5 => {
+            // one type identifier, one byte of data, four of sender, one of status
+            if payload_data.len() != 7 {
+                return display_updated;
+            }
+
+            // not really interesting to us
+            return display_updated;
+        },
+        0xA5 => {
+            // one type identifier, four bytes of data, four of sender, one of status
+            if payload_data.len() != 10 {
+                return display_updated;
+            }
+
+            let data = u32::from_be_bytes(payload_data[1..5].try_into().unwrap());
+            let sender = u32::from_be_bytes(payload_data[5..9].try_into().unwrap());
+
+            if sender == 0x00_00_00_01 {
+                // inside temperature according to A5-09-04
+                // HHHH_HHHH CCCC_CCCC TTTT_TTTT 0000_Lxx0
+
+                if data & 0b1000 == 0 {
+                    // this is a teach-in packet, ignore it
+                    return display_updated;
+                }
+
+                // 8 bits of temperature in units of 0.2 °C
+                let temperature_bits = ((data >> 8) & 0xFF) as u16;
+                let temperature_tenth_celsius = temperature_bits * 2;
+
+                let temperature_digit_0 = if temperature_tenth_celsius >= 100 {
+                    b'0' + u8::try_from(temperature_tenth_celsius / 100).unwrap()
+                } else {
+                    b' '
+                };
+                // digit 1 is before the decimal point so always there even if it's zero
+                let temperature_digit_1 = b'0' + u8::try_from((temperature_tenth_celsius / 10) % 10).unwrap();
+                let temperature_digit_2 = b'0' + u8::try_from(temperature_tenth_celsius % 10).unwrap();
+
+                bottom_display.set_digit(0, temperature_digit_0, false);
+                bottom_display.set_digit(1, temperature_digit_1, true);
+                bottom_display.set_digit(2, temperature_digit_2, false);
+                display_updated = true;
+            } else if sender == 0x00_00_00_02 {
+                // outside temperature according to A5-04-03
+                // HHHH_HHHH 0000_00TT TTTT_TTTT 0000_L00x
+
+                if data & 0b1000 == 0 {
+                    // this is a teach-in packet, ignore it
+                    return display_updated;
+                }
+
+                // 10 bits of temperature from -20 to +60 °C
+                // let's aim for a single decimal digit
+                let temperature_bits = (data >> 8) & 0x3FF;
+                let temperature_tenth_celsius = ((temperature_bits * 800) / 1024) as i32 - 200;
+
+                if temperature_tenth_celsius <= -10 {
+                    // -TT
+                    let abs_temp = (-temperature_tenth_celsius) / 10;
+                    let temperature_digit_0 = b'-';
+                    let temperature_digit_1 = b'0' + u8::try_from(abs_temp / 10).unwrap();
+                    let temperature_digit_2 = b'0' + u8::try_from(abs_temp % 10).unwrap();
+                    top_display.set_digit(0, temperature_digit_0, false);
+                    top_display.set_digit(1, temperature_digit_1, false);
+                    top_display.set_digit(2, temperature_digit_2, false);
+                } else if temperature_tenth_celsius < 0 {
+                    // -T.T
+                    let abs_temp = -temperature_tenth_celsius;
+                    let temperature_digit_0 = b'-';
+                    let temperature_digit_1 = b'0' + u8::try_from(abs_temp / 10).unwrap();
+                    let temperature_digit_2 = b'0' + u8::try_from(abs_temp % 10).unwrap();
+                    top_display.set_digit(0, temperature_digit_0, false);
+                    top_display.set_digit(1, temperature_digit_1, true);
+                    top_display.set_digit(2, temperature_digit_2, false);
+                } else if temperature_tenth_celsius < 100 {
+                    let temperature_digit_0 = b' ';
+                    let temperature_digit_1 = b'0' + u8::try_from(temperature_tenth_celsius / 10).unwrap();
+                    let temperature_digit_2 = b'0' + u8::try_from(temperature_tenth_celsius % 10).unwrap();
+                    top_display.set_digit(0, temperature_digit_0, false);
+                    top_display.set_digit(1, temperature_digit_1, true);
+                    top_display.set_digit(2, temperature_digit_2, false);
+                } else {
+                    let temperature_digit_0 = b'0' + u8::try_from(temperature_tenth_celsius / 100).unwrap();
+                    let temperature_digit_1 = b'0' + u8::try_from((temperature_tenth_celsius / 10) % 10).unwrap();
+                    let temperature_digit_2 = b'0' + u8::try_from(temperature_tenth_celsius % 10).unwrap();
+                    top_display.set_digit(0, temperature_digit_0, false);
+                    top_display.set_digit(1, temperature_digit_1, true);
+                    top_display.set_digit(2, temperature_digit_2, false);
+                }
+                display_updated = true;
+            }
+        },
+        _ => {
+            // some other type of radio packet, we don't care
+        },
+    }
+
+    display_updated
+}
+
+fn update_displays(
+    peripherals: &Peripherals,
+    top_display: &TempDisplayState,
+    bottom_display: &TempDisplayState,
+) {
+    peripherals.GPIOD.odr().modify(|_, w| w
+        .odr13().low() // CS1 low
+    );
+    top_display.send_via_spi(&peripherals);
+    peripherals.GPIOD.odr().modify(|_, w| w
+        .odr13().high() // CS1 high
+    );
+
+    peripherals.GPIOB.odr().modify(|_, w| w
+        .odr0().low() // CS2 low
+    );
+    bottom_display.send_via_spi(&peripherals);
+    peripherals.GPIOB.odr().modify(|_, w| w
+        .odr0().high() // CS2 high
+    );
 }

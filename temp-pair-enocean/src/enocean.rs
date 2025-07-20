@@ -16,7 +16,7 @@ type EnoceanUart = Usart2;
 
 #[derive(Clone, Copy, Debug)]
 #[from_to_other(base_type = u8, derive_compare = "as_int")]
-enum PacketType {
+pub enum PacketType {
     RadioErp1 = 0x01,
     Response = 0x02,
     RadioSubTelegram = 0x03,
@@ -110,14 +110,52 @@ enum CommonCommandType {
     Other(u8),
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Payload {
+    buffer: [u8; 128],
+    data_length: usize,
+    optional_data_length: usize,
+}
+impl Payload {
+    pub fn data(&self) -> &[u8] {
+        &self.buffer[0..self.data_length]
+    }
 
-pub(crate) fn process_one_packet(peripherals: &Peripherals) {
+    pub fn optional_data(&self) -> &[u8] {
+        &self.buffer[self.data_length..self.data_length+self.optional_data_length]
+    }
+}
+impl Default for Payload {
+    fn default() -> Self {
+        Self {
+            buffer: [0u8; 128],
+            data_length: 0,
+            optional_data_length: 0,
+        }
+    }
+}
+
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum PacketResult {
+    BufferEmpty,
+    NotSynced,
+    NotEnoughBytes,
+    Short,
+    Packet {
+        packet_type: PacketType,
+        payload: Payload,
+    },
+}
+
+
+pub(crate) fn process_one_packet(peripherals: &Peripherals) -> PacketResult {
     // copy the current buffer contents
     let mut current_buffer = [0u8; 128];
     let original_size = EnoceanUart::copy_buffer(&mut current_buffer);
     if original_size == 0 {
         // empty buffer
-        return;
+        return PacketResult::BufferEmpty;
     }
     let original_slice = &current_buffer[..original_size];
 
@@ -138,7 +176,7 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
             }
 
             // there is no packet
-            return;
+            return PacketResult::NotSynced;
         },
     };
 
@@ -159,7 +197,7 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
     // = 7 bytes
     if current_slice.len() < 7 {
         // not enough; try again later
-        return;
+        return PacketResult::NotEnoughBytes;
     }
 
     // check if the length values are plausible (CRC8)
@@ -169,7 +207,7 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
 
         // eat the sync byte and go around
         let _ = EnoceanUart::take_byte();
-        return;
+        return PacketResult::NotSynced;
     }
 
     // decode the length values
@@ -181,7 +219,7 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
     // do we still have enough bytes?
     if current_slice.len() < 7 + data_length + optional_length {
         // no; try again later
-        return;
+        return PacketResult::Short;
     }
 
     // check data CRC
@@ -192,7 +230,7 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
 
         // eat the sync byte and go around
         let _ = EnoceanUart::take_byte();
-        return;
+        return PacketResult::NotSynced;
     }
 
     // eat the whole packet
@@ -200,52 +238,50 @@ pub(crate) fn process_one_packet(peripherals: &Peripherals) {
         let _ = EnoceanUart::take_byte();
     }
 
-    let (data_slice, optional_data_slice) = full_data_slice.split_at(data_length);
+    let (data_slice, _optional_data_slice) = full_data_slice.split_at(data_length);
 
     // okay, what have we got?
-    match PacketType::from_base_type(current_slice[4]) {
+    let packet_type = PacketType::from_base_type(current_slice[4]);
+    match packet_type {
         PacketType::Event => {
-            if data_slice.len() < 1 {
-                // not a valid event
-                return;
-            }
+            if data_slice.len() > 0 {
+                // any interesting event?
+                match EventType::from_base_type(data_slice[0]) {
+                    EventType::Ready => {
+                        // good morning! switch to transparent mode
+                        let mut set_transparent_mode_packet = [
+                            0x55, // sync byte
+                            0x00, 0x02, // 2 bytes data length
+                            0x00, // 0 bytes optional length
+                            PacketType::CommonCommand.to_base_type(),
+                            0x00, // CRC8H placeholder
+                            CommonCommandType::WriteTransparentMode.to_base_type(),
+                            0x01, // enable transparent mode
+                            0x00, // CRC8D placeholder
+                        ];
+                        let crc8h = crc8(&set_transparent_mode_packet[1..5]);
+                        let crc8d = crc8(&set_transparent_mode_packet[6..8]);
+                        set_transparent_mode_packet[5] = crc8h;
+                        set_transparent_mode_packet[8] = crc8d;
 
-            // any interesting event?
-            match EventType::from_base_type(data_slice[0]) {
-                EventType::Ready => {
-                    // good morning! switch to transparent mode
-                    let mut set_transparent_mode_packet = [
-                        0x55, // sync byte
-                        0x00, 0x02, // 2 bytes data length
-                        0x00, // 0 bytes optional length
-                        PacketType::CommonCommand.to_base_type(),
-                        0x00, // CRC8H placeholder
-                        CommonCommandType::WriteTransparentMode.to_base_type(),
-                        0x01, // enable transparent mode
-                        0x00, // CRC8D placeholder
-                    ];
-                    let crc8h = crc8(&set_transparent_mode_packet[1..5]);
-                    let crc8d = crc8(&set_transparent_mode_packet[6..8]);
-                    set_transparent_mode_packet[5] = crc8h;
-                    set_transparent_mode_packet[8] = crc8d;
-
-                    EnoceanUart::write(peripherals, &set_transparent_mode_packet);
-                },
-                _ => {},
+                        EnoceanUart::write(peripherals, &set_transparent_mode_packet);
+                    },
+                    _ => {},
+                }
             }
-        },
-        PacketType::RadioErp1 => {
-            // try outputting data to 8800
-            let mut i2c_buf = [0x01, 0, 0, 0, 0, 0, 0, 0, 0];
-            let i2c_buf_data_len = i2c_buf[1..].len();
-            if i2c_buf_data_len <= data_slice.len() {
-                i2c_buf[1..].copy_from_slice(&data_slice[0..i2c_buf_data_len]);
-            } else {
-                i2c_buf[1..1+data_slice.len()].copy_from_slice(data_slice);
-            }
-
-            I2c2::write_data(peripherals, I2cAddress::new(0x00).unwrap(), &i2c_buf);
         },
         _ => {},
+    }
+
+    // return the packet
+    let mut payload_buffer = [0u8; 128];
+    payload_buffer[..full_data_slice.len()].copy_from_slice(&full_data_slice);
+    PacketResult::Packet {
+        packet_type,
+        payload: Payload {
+            buffer: payload_buffer,
+            data_length: data_length,
+            optional_data_length: optional_length,
+        },
     }
 }
