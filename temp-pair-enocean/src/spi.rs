@@ -105,8 +105,9 @@ pub trait Spi {
             }
 
             // write a byte
-            spi.dr().modify(|_, w| w
-                .dr().set(*b as u16)
+            // (we must use dr8() here, otherwise SPI will try to send the 16 bits as 2 bytes)
+            spi.dr8().modify(|_, w| w
+                .dr().set(*b)
             );
 
             // wait until we have something to read
@@ -114,7 +115,8 @@ pub trait Spi {
             }
 
             // read a byte
-            *b = (spi.dr().read().dr().bits() & 0xFF) as u8;
+            // (we must use dr8() here, otherwise SPI will try to read the 16 bits as 2 bytes)
+            *b = spi.dr8().read().dr().bits();
         }
 
         // pretend that chip select is high
