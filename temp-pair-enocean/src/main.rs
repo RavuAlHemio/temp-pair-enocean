@@ -4,6 +4,7 @@
 
 mod crc8;
 mod enocean;
+mod flash;
 mod i2c;
 mod hmi_display;
 mod spi;
@@ -304,6 +305,25 @@ const fn divide_u32_to_u16_round(dividend: u32, divisor: u32) -> u16 {
 }
 
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum AppState {
+    #[default] Idle,
+    NewSetup(usize),
+}
+impl AppState {
+    pub fn incremented(&self) -> Self {
+        match self {
+            Self::Idle => Self::NewSetup(1),
+            Self::NewSetup(i) => if *i < 27 {
+                Self::NewSetup(*i + 1)
+            } else {
+                Self::Idle
+            },
+        }
+    }
+}
+
+
 #[entry]
 fn main() -> ! {
     let mut peripherals = unsafe { Peripherals::steal() };
@@ -376,6 +396,7 @@ fn main() -> ! {
     const VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS: u8 = 0x01;
     const REG_8800_SCANLIMIT: u8 = 0x0B;
     const VALUE_8800_SCANLIMIT_ALL_DIGITS: u8 = 0b111;
+    const REG_8800_KEYA: u8 = 0x1C;
 
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SHUTDOWN, VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS]);
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SCANLIMIT, VALUE_8800_SCANLIMIT_ALL_DIGITS]);
@@ -383,6 +404,42 @@ fn main() -> ! {
     peripherals.GPIOA.odr().modify(|_, w| w
         .odr8().low()
     );
+
+    // read outside and inside address and packet format from flash
+    let mut address_buffer = [
+        0, 0, 0, 0, // outside address
+        0, 0, 0, // outside packet format
+        0, 0, 0, 0, // inside address
+        0, 0, 0, // inside packet format
+    ];
+    // pull PE8 low to select flash chip
+    peripherals.GPIOE.odr().modify(|_, w| w
+        .odr8().low()
+    );
+    crate::flash::read(&peripherals, crate::flash::Address::new(0).unwrap(), &mut address_buffer);
+    // deselect flash chip again
+    peripherals.GPIOE.odr().modify(|_, w| w
+        .odr8().high()
+    );
+
+    let mut outside_address =
+        u32::from(address_buffer[0]) << 24
+        | u32::from(address_buffer[1]) << 16
+        | u32::from(address_buffer[2]) <<  8
+        | u32::from(address_buffer[3]) <<  0;
+    let mut outside_format =
+        u32::from(address_buffer[4]) << 16
+        | u32::from(address_buffer[5]) <<  8
+        | u32::from(address_buffer[6]) <<  0;
+    let mut inside_address =
+        u32::from(address_buffer[7]) << 24
+        | u32::from(address_buffer[8]) << 16
+        | u32::from(address_buffer[9]) <<  8
+        | u32::from(address_buffer[10]) <<  0;
+    let mut inside_format =
+        u32::from(address_buffer[11]) << 16
+        | u32::from(address_buffer[12]) <<  8
+        | u32::from(address_buffer[13]) <<  0;
 
     // pull PC15 low to reset EnOcean module
     peripherals.GPIOC.odr().modify(|_, w| w
@@ -404,21 +461,238 @@ fn main() -> ! {
 
     update_displays(&peripherals, &top_display, &bottom_display);
 
+    let mut app_state = AppState::Idle;
+    let mut new_setup_nibbles: [u8; 28] = [0; 28];
     loop {
+        // EnOcean logic
         let packet_result = crate::enocean::process_one_packet(&peripherals);
         let display_updated = act_upon_one_packet(
             packet_result,
+            outside_address, outside_format,
+            inside_address, inside_format,
             &mut top_display,
             &mut bottom_display,
         );
         if display_updated {
             update_displays(&peripherals, &top_display, &bottom_display);
         }
+
+        // HMI logic
+        if peripherals.GPIOB.idr().read().idr14().is_low() {
+            // 8800 wants us to read the buttons
+            I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_KEYA]);
+            let mut key_values = [0u8; 2];
+            I2c2::read_data(&peripherals, ADDR_8800, &mut key_values);
+
+            let all_key_values =
+                u16::from(key_values[0]) << 8
+                | u16::from(key_values[1]);
+
+            // popcount
+            let pop_count = all_key_values.count_ones();
+            if pop_count == 0 {
+                // nothing pressed; do nothing
+            } else if pop_count > 1 {
+                // multiple buttons pressed; go back to idle
+                app_state = AppState::Idle;
+            } else {
+                // a single button; now we have to make hard decisions
+                let value: u8 = match all_key_values {
+                    0x0001 => 0,
+                    0x0002 => 1,
+                    0x0004 => 2,
+                    0x0008 => 3,
+                    0x0010 => 4,
+                    0x0020 => 5,
+                    0x0040 => 6,
+                    0x0080 => 7,
+                    0x0100 => 8,
+                    0x0200 => 9,
+                    0x0400 => 10,
+                    0x0800 => 11,
+                    0x1000 => 12,
+                    0x2000 => 13,
+                    0x4000 => 14,
+                    0x8000 => 15,
+                    _ => unreachable!(), // popcount would not be 1
+                };
+
+                match app_state {
+                    AppState::Idle => {
+                        // the first byte of a new setup
+                        new_setup_nibbles.fill(0);
+                        new_setup_nibbles[0] = value;
+                    },
+                    AppState::NewSetup(i) => {
+                        // a subsequent byte
+                        new_setup_nibbles[i] = value;
+                    },
+                }
+
+                app_state = app_state.incremented();
+
+                match app_state {
+                    AppState::Idle => {
+                        // and now the magic happens
+
+                        // move the nibbles into the correct variables
+                        outside_address =
+                            u32::from(new_setup_nibbles[ 0]) << 28
+                            | u32::from(new_setup_nibbles[ 1]) << 24
+                            | u32::from(new_setup_nibbles[ 2]) << 20
+                            | u32::from(new_setup_nibbles[ 3]) << 16
+                            | u32::from(new_setup_nibbles[ 4]) << 12
+                            | u32::from(new_setup_nibbles[ 5]) <<  8
+                            | u32::from(new_setup_nibbles[ 6]) <<  4
+                            | u32::from(new_setup_nibbles[ 7]) <<  0;
+                        outside_format =
+                            u32::from(new_setup_nibbles[ 8]) << 20
+                            | u32::from(new_setup_nibbles[ 9]) << 16
+                            | u32::from(new_setup_nibbles[10]) << 12
+                            | u32::from(new_setup_nibbles[11]) <<  8
+                            | u32::from(new_setup_nibbles[12]) <<  4
+                            | u32::from(new_setup_nibbles[13]) <<  0;
+                        inside_address =
+                            u32::from(new_setup_nibbles[14]) << 28
+                            | u32::from(new_setup_nibbles[15]) << 24
+                            | u32::from(new_setup_nibbles[16]) << 20
+                            | u32::from(new_setup_nibbles[17]) << 16
+                            | u32::from(new_setup_nibbles[18]) << 12
+                            | u32::from(new_setup_nibbles[19]) <<  8
+                            | u32::from(new_setup_nibbles[20]) <<  4
+                            | u32::from(new_setup_nibbles[21]) <<  0;
+                        inside_format =
+                            u32::from(new_setup_nibbles[22]) << 20
+                            | u32::from(new_setup_nibbles[23]) << 16
+                            | u32::from(new_setup_nibbles[24]) << 12
+                            | u32::from(new_setup_nibbles[25]) <<  8
+                            | u32::from(new_setup_nibbles[26]) <<  4
+                            | u32::from(new_setup_nibbles[27]) <<  0;
+
+                        // erase the first block of flash
+                        // pull write-prot high
+                        peripherals.GPIOD.odr().modify(|_, w| w
+                            .odr12().high()
+                        );
+
+                        // enable writing
+                        do_with_flash_chip_selected(&peripherals, |p|
+                            crate::flash::enable_writing(p)
+                        );
+                        // start erasing first 4k
+                        do_with_flash_chip_selected(&peripherals, |p|
+                            crate::flash::start_erase_4_kibibytes(p, crate::flash::Address::new(0).unwrap())
+                        );
+                        // wait until erasing is done
+                        do_with_flash_chip_selected(&peripherals, |p|
+                            crate::flash::wait_while_busy(p)
+                        );
+                        // enable writing again
+                        do_with_flash_chip_selected(&peripherals, |p|
+                            crate::flash::enable_writing(p)
+                        );
+                        // prepare writing buffer
+                        let writing_buffer = [
+                            ((outside_address >> 24) & 0xFF) as u8,
+                            ((outside_address >> 16) & 0xFF) as u8,
+                            ((outside_address >>  8) & 0xFF) as u8,
+                            ((outside_address >>  0) & 0xFF) as u8,
+                            ((outside_format >> 16) & 0xFF) as u8,
+                            ((outside_format >>  8) & 0xFF) as u8,
+                            ((outside_format >>  0) & 0xFF) as u8,
+                            ((inside_address >> 24) & 0xFF) as u8,
+                            ((inside_address >> 16) & 0xFF) as u8,
+                            ((inside_address >>  8) & 0xFF) as u8,
+                            ((inside_address >>  0) & 0xFF) as u8,
+                            ((inside_format >> 16) & 0xFF) as u8,
+                            ((inside_format >>  8) & 0xFF) as u8,
+                            ((inside_format >>  0) & 0xFF) as u8,
+                        ];
+                        // write at location
+                        do_with_flash_chip_selected(&peripherals, |p|
+                            crate::flash::write(p, crate::flash::Address::new(0).unwrap(), &writing_buffer)
+                        );
+                        // wait until writing is done
+                        do_with_flash_chip_selected(&peripherals, |p|
+                            crate::flash::wait_while_busy(p)
+                        );
+
+                        // now the variables are updated and the state is persisted
+                        // we can go back to regular temperature processing
+                    },
+                    AppState::NewSetup(next_nibble_index) => {
+                        if next_nibble_index <= 8 {
+                            // outside address
+                            show_nibbles_starting_at(&new_setup_nibbles, 0, next_nibble_index, &mut top_display, &mut bottom_display);
+                        } else if next_nibble_index <= 14 {
+                            // outside format
+                            show_nibbles_starting_at(&new_setup_nibbles, 8, next_nibble_index, &mut top_display, &mut bottom_display);
+                        } else if next_nibble_index <= 22 {
+                            // inside address
+                            show_nibbles_starting_at(&new_setup_nibbles, 14, next_nibble_index, &mut top_display, &mut bottom_display);
+                        } else {
+                            // inside format
+                            show_nibbles_starting_at(&new_setup_nibbles, 22, next_nibble_index, &mut top_display, &mut bottom_display);
+                        }
+                    },
+                }
+            }
+        }
     }
+}
+
+fn do_with_flash_chip_selected<P: FnMut(&Peripherals)>(
+    peripherals: &Peripherals,
+    mut procedure: P,
+) {
+    // pull chip select low
+    peripherals.GPIOE.odr().modify(|_, w| w
+        .odr8().low()
+    );
+
+    // run the procedure
+    procedure(peripherals);
+
+    // pull chip select high
+    peripherals.GPIOE.odr().modify(|_, w| w
+        .odr8().high()
+    );
+
+    // FIXME: wait a bit?
+}
+
+fn show_nibbles_starting_at(
+    new_setup_nibbles: &[u8],
+    start_nibble_index: usize,
+    next_nibble_index: usize,
+    top_display: &mut TempDisplayState,
+    bottom_display: &mut TempDisplayState,
+) {
+    let nibble_slice = if next_nibble_index < start_nibble_index {
+        // obviously invalid; use an empty slice
+        &[]
+    } else if next_nibble_index > start_nibble_index + 6 {
+        // won't fit; trim from left
+        &new_setup_nibbles[next_nibble_index-6..next_nibble_index]
+    } else {
+        // take as much as we can
+        &new_setup_nibbles[start_nibble_index..next_nibble_index]
+    };
+
+    top_display.set_nibble_digit(0, if nibble_slice.len() > 0 { nibble_slice[0] } else { 0x10 }, false);
+    top_display.set_nibble_digit(1, if nibble_slice.len() > 1 { nibble_slice[1] } else { 0x10 }, false);
+    top_display.set_nibble_digit(2, if nibble_slice.len() > 2 { nibble_slice[2] } else { 0x10 }, false);
+    bottom_display.set_nibble_digit(0, if nibble_slice.len() > 3 { nibble_slice[3] } else { 0x10 }, false);
+    bottom_display.set_nibble_digit(1, if nibble_slice.len() > 4 { nibble_slice[4] } else { 0x10 }, false);
+    bottom_display.set_nibble_digit(2, if nibble_slice.len() > 5 { nibble_slice[5] } else { 0x10 }, false);
 }
 
 fn act_upon_one_packet(
     packet_result: crate::enocean::PacketResult,
+    outside_address: u32,
+    outside_format: u32,
+    inside_address: u32,
+    inside_format: u32,
     top_display: &mut TempDisplayState,
     bottom_display: &mut TempDisplayState,
 ) -> bool {
@@ -442,15 +716,15 @@ fn act_upon_one_packet(
         return display_updated;
     }
 
-    match payload_data[0] {
+    let (data_slice, sender) = match payload_data[0] {
         0xF6|0xD5 => {
             // one type identifier, one byte of data, four of sender, one of status
             if payload_data.len() != 7 {
                 return display_updated;
             }
 
-            // not really interesting to us
-            return display_updated;
+            let sender = u32::from_be_bytes(payload_data[2..6].try_into().unwrap());
+            (&payload_data[1..2], sender)
         },
         0xA5 => {
             // one type identifier, four bytes of data, four of sender, one of status
@@ -458,91 +732,157 @@ fn act_upon_one_packet(
                 return display_updated;
             }
 
-            let data = u32::from_be_bytes(payload_data[1..5].try_into().unwrap());
             let sender = u32::from_be_bytes(payload_data[5..9].try_into().unwrap());
 
-            if sender == 0x00_00_00_01 {
-                // inside temperature according to A5-09-04
-                // HHHH_HHHH CCCC_CCCC TTTT_TTTT 0000_Lxx0
-
-                if data & 0b1000 == 0 {
-                    // this is a teach-in packet, ignore it
-                    return display_updated;
-                }
-
-                // 8 bits of temperature in units of 0.2 °C
-                let temperature_bits = ((data >> 8) & 0xFF) as u16;
-                let temperature_tenth_celsius = temperature_bits * 2;
-
-                let temperature_digit_0 = if temperature_tenth_celsius >= 100 {
-                    b'0' + u8::try_from(temperature_tenth_celsius / 100).unwrap()
-                } else {
-                    b' '
-                };
-                // digit 1 is before the decimal point so always there even if it's zero
-                let temperature_digit_1 = b'0' + u8::try_from((temperature_tenth_celsius / 10) % 10).unwrap();
-                let temperature_digit_2 = b'0' + u8::try_from(temperature_tenth_celsius % 10).unwrap();
-
-                bottom_display.set_digit(0, temperature_digit_0, false);
-                bottom_display.set_digit(1, temperature_digit_1, true);
-                bottom_display.set_digit(2, temperature_digit_2, false);
-                display_updated = true;
-            } else if sender == 0x00_00_00_02 {
-                // outside temperature according to A5-04-03
-                // HHHH_HHHH 0000_00TT TTTT_TTTT 0000_L00x
-
-                if data & 0b1000 == 0 {
-                    // this is a teach-in packet, ignore it
-                    return display_updated;
-                }
-
-                // 10 bits of temperature from -20 to +60 °C
-                // let's aim for a single decimal digit
-                let temperature_bits = (data >> 8) & 0x3FF;
-                let temperature_tenth_celsius = ((temperature_bits * 800) / 1024) as i32 - 200;
-
-                if temperature_tenth_celsius <= -10 {
-                    // -TT
-                    let abs_temp = (-temperature_tenth_celsius) / 10;
-                    let temperature_digit_0 = b'-';
-                    let temperature_digit_1 = b'0' + u8::try_from(abs_temp / 10).unwrap();
-                    let temperature_digit_2 = b'0' + u8::try_from(abs_temp % 10).unwrap();
-                    top_display.set_digit(0, temperature_digit_0, false);
-                    top_display.set_digit(1, temperature_digit_1, false);
-                    top_display.set_digit(2, temperature_digit_2, false);
-                } else if temperature_tenth_celsius < 0 {
-                    // -T.T
-                    let abs_temp = -temperature_tenth_celsius;
-                    let temperature_digit_0 = b'-';
-                    let temperature_digit_1 = b'0' + u8::try_from(abs_temp / 10).unwrap();
-                    let temperature_digit_2 = b'0' + u8::try_from(abs_temp % 10).unwrap();
-                    top_display.set_digit(0, temperature_digit_0, false);
-                    top_display.set_digit(1, temperature_digit_1, true);
-                    top_display.set_digit(2, temperature_digit_2, false);
-                } else if temperature_tenth_celsius < 100 {
-                    let temperature_digit_0 = b' ';
-                    let temperature_digit_1 = b'0' + u8::try_from(temperature_tenth_celsius / 10).unwrap();
-                    let temperature_digit_2 = b'0' + u8::try_from(temperature_tenth_celsius % 10).unwrap();
-                    top_display.set_digit(0, temperature_digit_0, false);
-                    top_display.set_digit(1, temperature_digit_1, true);
-                    top_display.set_digit(2, temperature_digit_2, false);
-                } else {
-                    let temperature_digit_0 = b'0' + u8::try_from(temperature_tenth_celsius / 100).unwrap();
-                    let temperature_digit_1 = b'0' + u8::try_from((temperature_tenth_celsius / 10) % 10).unwrap();
-                    let temperature_digit_2 = b'0' + u8::try_from(temperature_tenth_celsius % 10).unwrap();
-                    top_display.set_digit(0, temperature_digit_0, false);
-                    top_display.set_digit(1, temperature_digit_1, true);
-                    top_display.set_digit(2, temperature_digit_2, false);
-                }
-                display_updated = true;
+            (&payload_data[1..5], sender)
+        },
+        0xD2 => {
+            // one type identifier, variable number of bytes of data, four of sender, one of status
+            // (the additional CRC only shows up in the radio protocol;
+            // the serial protocol does its own CRCs)
+            if payload_data.len() < 6 {
+                return display_updated;
             }
+
+            let data = &payload_data[1..payload_data.len()-5];
+            let sender = u32::from_be_bytes(payload_data[payload_data.len()-5..payload_data.len()-1].try_into().unwrap());
+            (data, sender)
         },
         _ => {
             // some other type of radio packet, we don't care
+            return display_updated;
         },
+    };
+
+    if sender == outside_address {
+        // is the packet in the correct format?
+        // ff-xx-xx
+        if !format_matches(outside_format, payload_data[0]) {
+            // no, this packet is in a different format
+            return display_updated;
+        }
+
+        // decode the temperature value
+        let decoded = decode_temperature(outside_format, data_slice, top_display);
+        display_updated = display_updated || decoded;
+    } else if sender == inside_address {
+        if !format_matches(inside_format, payload_data[0]) {
+            // no, this packet is in a different format
+            return display_updated;
+        }
+
+        // decode the temperature value
+        let decoded = decode_temperature(inside_format, data_slice, bottom_display);
+        display_updated = display_updated || decoded;
     }
 
     display_updated
+}
+
+fn format_matches(
+    known_format: u32,
+    packet_format: u8,
+) -> bool {
+    // known_format is ff-xx-xx
+    let expected_format = ((known_format >> 16) & 0xFF) as u8;
+    expected_format == packet_format
+}
+
+fn decode_temperature(
+    format: u32,
+    data_slice: &[u8],
+    display: &mut TempDisplayState,
+) -> bool {
+    if format == 0xA5_09_04 {
+        // HHHH_HHHH CCCC_CCCC TTTT_TTTT 0000_Lxx0
+        let data = match data_slice.try_into() {
+            Ok(ds) => u32::from_be_bytes(ds),
+            Err(_) => {
+                // wrong format
+                return false;
+            },
+        };
+
+        if data & 0b1000 == 0 {
+            // this is a teach-in packet, ignore it
+            return false;
+        }
+
+        // 8 bits of temperature in units of 0.2 °C
+        let temperature_bits = ((data >> 8) & 0xFF) as u16;
+        let temperature_tenth_celsius = temperature_bits * 2;
+
+        let temperature_digit_0 = if temperature_tenth_celsius >= 100 {
+            b'0' + u8::try_from(temperature_tenth_celsius / 100).unwrap()
+        } else {
+            b' '
+        };
+        // digit 1 is before the decimal point so always there even if it's zero
+        let temperature_digit_1 = b'0' + u8::try_from((temperature_tenth_celsius / 10) % 10).unwrap();
+        let temperature_digit_2 = b'0' + u8::try_from(temperature_tenth_celsius % 10).unwrap();
+
+        display.set_digit(0, temperature_digit_0, false);
+        display.set_digit(1, temperature_digit_1, true);
+        display.set_digit(2, temperature_digit_2, false);
+        true
+    } else if format == 0xA5_04_03 {
+        // HHHH_HHHH 0000_00TT TTTT_TTTT 0000_L00x
+        let data = match data_slice.try_into() {
+            Ok(ds) => u32::from_be_bytes(ds),
+            Err(_) => {
+                // wrong format
+                return false;
+            },
+        };
+
+        if data & 0b1000 == 0 {
+            // this is a teach-in packet, ignore it
+            return false;
+        }
+
+        // 10 bits of temperature from -20 to +60 °C
+        // let's aim for a single decimal digit
+        let temperature_bits = (data >> 8) & 0x3FF;
+        let temperature_tenth_celsius = ((temperature_bits * 800) / 1024) as i32 - 200;
+
+        if temperature_tenth_celsius <= -10 {
+            // -TT
+            let abs_temp = (-temperature_tenth_celsius) / 10;
+            let temperature_digit_0 = b'-';
+            let temperature_digit_1 = b'0' + u8::try_from(abs_temp / 10).unwrap();
+            let temperature_digit_2 = b'0' + u8::try_from(abs_temp % 10).unwrap();
+            display.set_digit(0, temperature_digit_0, false);
+            display.set_digit(1, temperature_digit_1, false);
+            display.set_digit(2, temperature_digit_2, false);
+        } else if temperature_tenth_celsius < 0 {
+            // -T.T
+            let abs_temp = -temperature_tenth_celsius;
+            let temperature_digit_0 = b'-';
+            let temperature_digit_1 = b'0' + u8::try_from(abs_temp / 10).unwrap();
+            let temperature_digit_2 = b'0' + u8::try_from(abs_temp % 10).unwrap();
+            display.set_digit(0, temperature_digit_0, false);
+            display.set_digit(1, temperature_digit_1, true);
+            display.set_digit(2, temperature_digit_2, false);
+        } else if temperature_tenth_celsius < 100 {
+            let temperature_digit_0 = b' ';
+            let temperature_digit_1 = b'0' + u8::try_from(temperature_tenth_celsius / 10).unwrap();
+            let temperature_digit_2 = b'0' + u8::try_from(temperature_tenth_celsius % 10).unwrap();
+            display.set_digit(0, temperature_digit_0, false);
+            display.set_digit(1, temperature_digit_1, true);
+            display.set_digit(2, temperature_digit_2, false);
+        } else {
+            let temperature_digit_0 = b'0' + u8::try_from(temperature_tenth_celsius / 100).unwrap();
+            let temperature_digit_1 = b'0' + u8::try_from((temperature_tenth_celsius / 10) % 10).unwrap();
+            let temperature_digit_2 = b'0' + u8::try_from(temperature_tenth_celsius % 10).unwrap();
+            display.set_digit(0, temperature_digit_0, false);
+            display.set_digit(1, temperature_digit_1, true);
+            display.set_digit(2, temperature_digit_2, false);
+        }
+        true
+    } else {
+        // don't know how to decode this format
+        false
+    }
 }
 
 fn update_displays(

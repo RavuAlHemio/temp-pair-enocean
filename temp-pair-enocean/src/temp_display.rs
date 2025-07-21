@@ -187,6 +187,19 @@ impl TempDisplayState {
         self.set_segments(position, CHARACTER_SEGMENTS[digit_pos] | decimal_point_segment);
     }
 
+    pub fn set_nibble_digit(&mut self, position: usize, nibble: u8, decimal_point: bool) {
+        assert!(position < 3);
+        let ascii_digit = if nibble >= 0x10 {
+            b' '
+        } else {
+            [
+                b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7',
+                b'8', b'9', b'A', b'b', b'C', b'd', b'E', b'F',
+            ][usize::from(nibble)]
+        };
+        self.set_digit(position, ascii_digit, decimal_point);
+    }
+
     pub fn send_via_spi(&self, peripherals: &Peripherals) {
         let mut spi_bytes = self.to_spi_bytes();
         Spi1::communicate_bytes(&peripherals, &mut spi_bytes);
