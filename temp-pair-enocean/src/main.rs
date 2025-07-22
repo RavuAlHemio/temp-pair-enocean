@@ -426,6 +426,11 @@ fn main() -> ! {
         .odr8().low()
     );
 
+    // unreset flash
+    peripherals.GPIOE.odr().modify(|_, w| w
+        .odr7().high()
+    );
+
     // read outside and inside address and packet format from flash
     let mut address_buffer = [
         0, 0, 0, 0, // outside address
