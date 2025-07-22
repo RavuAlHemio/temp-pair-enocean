@@ -416,9 +416,11 @@ fn main() -> ! {
     const REG_8800_SCANLIMIT: u8 = 0x0B;
     const VALUE_8800_SCANLIMIT_ALL_DIGITS: u8 = 0b111;
     const REG_8800_KEYA: u8 = 0x1C;
+    const REG_8800_LED_ROW_0: u8 = 0x01;
 
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SHUTDOWN, VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS]);
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SCANLIMIT, VALUE_8800_SCANLIMIT_ALL_DIGITS]);
+    I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_LED_ROW_0, 0, 0, 0, 0, 0, 0, 0, 0]);
 
     peripherals.GPIOA.odr().modify(|_, w| w
         .odr8().low()
