@@ -766,7 +766,6 @@ fn act_upon_one_packet(
             }
 
             let sender = u32::from_be_bytes(payload_data[5..9].try_into().unwrap());
-
             (&payload_data[1..5], sender)
         },
         0xD2 => {
