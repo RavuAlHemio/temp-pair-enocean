@@ -438,14 +438,8 @@ fn main() -> ! {
         0, 0, 0, 0, // inside address
         0, 0, 0, // inside packet format
     ];
-    // pull PE8 low to select flash chip
-    peripherals.GPIOE.odr().modify(|_, w| w
-        .odr8().low()
-    );
-    crate::flash::read(&peripherals, crate::flash::Address::new(0).unwrap(), &mut address_buffer);
-    // deselect flash chip again
-    peripherals.GPIOE.odr().modify(|_, w| w
-        .odr8().high()
+    do_with_flash_chip_selected(&peripherals, |p|
+        crate::flash::read(p, crate::flash::Address::new(0).unwrap(), &mut address_buffer)
     );
 
     let mut outside_address =
