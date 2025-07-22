@@ -504,9 +504,11 @@ fn main() -> ! {
             let mut key_values = [0u8; 2];
             I2c2::read_data(&peripherals, ADDR_8800, &mut key_values);
 
-            let all_key_values =
+            // by default: 0 pressed, 1 not pressed
+            let negated_all_key_values =
                 u16::from(key_values[0]) << 8
                 | u16::from(key_values[1]);
+            let all_key_values = !negated_all_key_values;
 
             // popcount
             let pop_count = all_key_values.count_ones();
