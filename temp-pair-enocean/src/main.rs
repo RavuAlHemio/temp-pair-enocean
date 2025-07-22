@@ -667,6 +667,8 @@ fn main() -> ! {
                         }
                     },
                 }
+
+                update_displays(&peripherals, &top_display, &bottom_display);
             }
         }
     }
