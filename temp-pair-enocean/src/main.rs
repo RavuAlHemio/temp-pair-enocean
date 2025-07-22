@@ -29,7 +29,23 @@ pub const CLOCK_SPEED_HZ: u32 = 25_000_000;
 
 #[panic_handler]
 fn handle_panic(_info: &PanicInfo) -> ! {
+    let peripherals = unsafe { Peripherals::steal() };
     loop {
+        peripherals.GPIOA.odr().modify(|_, w| w
+            .odr8().high()
+        );
+
+        for _ in 0..1024*1024 {
+            cortex_m::asm::nop();
+        }
+
+        peripherals.GPIOA.odr().modify(|_, w| w
+            .odr8().low()
+        );
+
+        for _ in 0..1024*1024 {
+            cortex_m::asm::nop();
+        }
     }
 }
 
