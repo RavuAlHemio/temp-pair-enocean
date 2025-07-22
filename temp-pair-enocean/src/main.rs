@@ -248,7 +248,10 @@ fn setup_pins(peripherals: &mut Peripherals) {
         .ot11().push_pull()
     );
 
-    // set pulling on input ports
+    // set pulling on input ports and SPI SCK
+    peripherals.GPIOA.pupdr().modify(|_, w| w
+        .pupdr5().pull_down() // idle SPI1 SCK polarity: low
+    );
     peripherals.GPIOB.pupdr().modify(|_, w| w
         .pupdr14().pull_up() // AS1115 datasheet says: either floating or GND
     );
