@@ -640,6 +640,15 @@ fn main() -> ! {
                         );
 
                         // now the variables are updated and the state is persisted
+
+                        // turn off the displays
+                        top_display.set_digit(0, b' ', false);
+                        top_display.set_digit(1, b' ', false);
+                        top_display.set_digit(2, b' ', false);
+                        bottom_display.set_digit(0, b' ', false);
+                        bottom_display.set_digit(1, b' ', false);
+                        bottom_display.set_digit(2, b' ', false);
+
                         // we can go back to regular temperature processing
                     },
                     AppState::NewSetup(next_nibble_index) => {
