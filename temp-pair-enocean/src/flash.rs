@@ -10,6 +10,7 @@ const CMD_WRITE_ENABLE: u8 = 0x06;
 const CMD_READ_STATUS_REGISTER_1: u8 = 0x05;
 const CMD_READ_STATUS_REGISTER_2: u8 = 0x35;
 const CMD_READ_STATUS_REGISTER_3: u8 = 0x15;
+const CMD_READ_STATUS_REGISTERS: u8 = 0x65;
 const CMD_ERASE_4K: u8 = 0x20;
 const CMD_ERASE_32K: u8 = 0x52;
 const CMD_ERASE_64K: u8 = 0xD8;
@@ -133,4 +134,33 @@ pub fn read(peripherals: &Peripherals, addr: Address, values: &mut [u8]) {
     ];
     FlashSpi::communicate_bytes(peripherals, &mut command_start);
     FlashSpi::communicate_bytes(peripherals, values);
+}
+
+macro_rules! impl_read_status_register {
+    ($name:ident, $opcode:expr) => {
+        /// Reads the given status register.
+        ///
+        /// You must pull ~{CS} low before calling this function, then pull it high again when it
+        /// completes.
+        pub fn $name(peripherals: &Peripherals) -> u8 {
+            let mut buffer: [u8; 2] = [$opcode, 0x00];
+            FlashSpi::communicate_bytes(peripherals, &mut buffer);
+            buffer[1]
+        }
+    }
+}
+
+impl_read_status_register!(read_status_register_1, CMD_READ_STATUS_REGISTER_1);
+impl_read_status_register!(read_status_register_2, CMD_READ_STATUS_REGISTER_2);
+impl_read_status_register!(read_status_register_3, CMD_READ_STATUS_REGISTER_3);
+
+pub fn read_all_status_registers(peripherals: &Peripherals) -> [u8; 5] {
+    let mut buffer: [u8; 8] = [
+        CMD_READ_STATUS_REGISTERS,
+        0x01, // start with the first status register
+        0x00, // dummy byte,
+        0, 0, 0, 0, 0, // bytes for the status register values
+    ];
+    FlashSpi::communicate_bytes(peripherals, &mut buffer);
+    buffer[3..8].try_into().unwrap()
 }

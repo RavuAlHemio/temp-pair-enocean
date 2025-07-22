@@ -422,6 +422,7 @@ fn main() -> ! {
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SCANLIMIT, VALUE_8800_SCANLIMIT_ALL_DIGITS]);
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_LED_ROW_0, 0, 0, 0, 0, 0, 0, 0, 0]);
 
+    // turn off blinky LED
     peripherals.GPIOA.odr().modify(|_, w| w
         .odr8().low()
     );
@@ -429,6 +430,33 @@ fn main() -> ! {
     // unreset flash
     peripherals.GPIOE.odr().modify(|_, w| w
         .odr7().high()
+    );
+
+    // pull ~{write-prot} high
+    peripherals.GPIOD.odr().modify(|_, w| w
+        .odr12().high()
+    );
+    // enable writing
+    do_with_flash_chip_selected(&peripherals, |p|
+        crate::flash::enable_writing(p)
+    );
+    // read status registers
+    let status_register = do_with_flash_chip_selected(&peripherals, |p|
+        crate::flash::read_all_status_registers(p)
+    );
+    I2c2::write_data(
+        &peripherals, ADDR_8800,
+        &[
+            REG_8800_LED_ROW_0,
+            status_register[0], status_register[1],
+            status_register[2], status_register[3],
+            status_register[4], 0,
+            0, 0,
+        ],
+    );
+    // pull ~{write-prot} low
+    peripherals.GPIOD.odr().modify(|_, w| w
+        .odr12().low()
     );
 
     // read outside and inside address and packet format from flash
@@ -441,6 +469,17 @@ fn main() -> ! {
     do_with_flash_chip_selected(&peripherals, |p|
         crate::flash::read(p, crate::flash::Address::new(0).unwrap(), &mut address_buffer)
     );
+    /*
+    // visualize what is programmed into Flash
+    I2c2::write_data(
+        &peripherals, ADDR_8800,
+        &[
+            REG_8800_LED_ROW_0,
+            address_buffer[0], address_buffer[1], address_buffer[2], address_buffer[3],
+            address_buffer[4], address_buffer[5], address_buffer[6], address_buffer[7],
+        ],
+    );
+    */
 
     let mut outside_address =
         u32::from(address_buffer[0]) << 24
@@ -592,7 +631,7 @@ fn main() -> ! {
                             | u32::from(new_setup_nibbles[27]) <<  0;
 
                         // erase the first block of flash
-                        // pull write-prot high
+                        // pull ~{write-prot} high
                         peripherals.GPIOD.odr().modify(|_, w| w
                             .odr12().high()
                         );
@@ -639,6 +678,11 @@ fn main() -> ! {
                             crate::flash::wait_while_busy(p)
                         );
 
+                        // pull ~{write-prot} low
+                        peripherals.GPIOD.odr().modify(|_, w| w
+                            .odr12().low()
+                        );
+
                         // now the variables are updated and the state is persisted
 
                         // turn off the displays
@@ -674,24 +718,29 @@ fn main() -> ! {
     }
 }
 
-fn do_with_flash_chip_selected<P: FnMut(&Peripherals)>(
+fn do_with_flash_chip_selected<T, P: FnMut(&Peripherals) -> T>(
     peripherals: &Peripherals,
     mut procedure: P,
-) {
+) -> T {
     // pull chip select low
     peripherals.GPIOE.odr().modify(|_, w| w
         .odr8().low()
     );
 
     // run the procedure
-    procedure(peripherals);
+    let ret = procedure(peripherals);
 
     // pull chip select high
     peripherals.GPIOE.odr().modify(|_, w| w
         .odr8().high()
     );
 
-    // FIXME: wait a bit?
+    // wait a bit
+    for _ in 0..1024*1024 {
+        cortex_m::asm::nop();
+    }
+
+    ret
 }
 
 fn show_nibbles_starting_at(
