@@ -164,3 +164,76 @@ pub fn read_all_status_registers(peripherals: &Peripherals) -> [u8; 5] {
     FlashSpi::communicate_bytes(peripherals, &mut buffer);
     buffer[3..8].try_into().unwrap()
 }
+
+pub fn jedec_reset(peripherals: &Peripherals) {
+    // grab the SCK and COPI pins for a quick second
+    peripherals.GPIOA.moder().modify(|_, w| w
+        .moder5().output() // SPI1 SCK
+        .moder7().output() // SPI1 COPI
+    );
+
+    // pull and keep SCK low
+    peripherals.GPIOA.odr().modify(|_, w| w
+        .odr5().low()
+    );
+
+    // pull ~{CS} down
+    peripherals.GPIOE.odr().modify(|_, w| w
+        .odr8().low()
+    );
+
+    // COPI down
+    peripherals.GPIOA.odr().modify(|_, w| w
+        .odr7().low()
+    );
+
+    // ~{CS} up
+    peripherals.GPIOE.odr().modify(|_, w| w
+        .odr8().high()
+    );
+
+    // COPI up
+    peripherals.GPIOA.odr().modify(|_, w| w
+        .odr7().high()
+    );
+
+    // bounce ~{CS}
+    peripherals.GPIOE.odr().modify(|_, w| w
+        .odr8().low()
+    );
+    peripherals.GPIOE.odr().modify(|_, w| w
+        .odr8().high()
+    );
+
+    // COPI down
+    peripherals.GPIOA.odr().modify(|_, w| w
+        .odr7().low()
+    );
+
+    // bounce ~{CS}
+    peripherals.GPIOE.odr().modify(|_, w| w
+        .odr8().low()
+    );
+    peripherals.GPIOE.odr().modify(|_, w| w
+        .odr8().high()
+    );
+
+    // COPI up
+    peripherals.GPIOA.odr().modify(|_, w| w
+        .odr7().high()
+    );
+
+    // bounce ~{CS}
+    peripherals.GPIOE.odr().modify(|_, w| w
+        .odr8().low()
+    );
+    peripherals.GPIOE.odr().modify(|_, w| w
+        .odr8().high()
+    );
+
+    // give the pins back to SPI
+    peripherals.GPIOA.moder().modify(|_, w| w
+        .moder5().alternate() // SPI1 SCK
+        .moder7().alternate() // SPI1 COPI
+    );
+}

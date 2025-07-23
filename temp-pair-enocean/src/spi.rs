@@ -99,6 +99,11 @@ pub trait Spi {
             .ssi().slave_selected()
         );
 
+        // sleep a bit to ensure chip select stabilizes
+        for _ in 0..32 {
+            cortex_m::asm::nop();
+        }
+
         for b in data {
             // wait until previous transfer is complete
             while spi.sr().read().txe().is_not_empty() {
@@ -117,6 +122,11 @@ pub trait Spi {
             // read a byte
             // (we must use dr8() here, otherwise SPI will try to read the 16 bits as 2 bytes)
             *b = spi.dr8().read().dr().bits();
+        }
+
+        // sleep a bit to ensure clock is down again
+        for _ in 0..32 {
+            cortex_m::asm::nop();
         }
 
         // pretend that chip select is high

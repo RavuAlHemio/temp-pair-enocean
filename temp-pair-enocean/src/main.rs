@@ -129,14 +129,14 @@ fn handle_panic(_info: &PanicInfo) -> ! {
 ///                    │          └────────┘└────────┘└────────┘
 ///                    │╒═══════╕
 ///                    └┤ PPRE2 ├──┐ APB2 (max. 108 MHz)
-///                     │    /1 │  │
-///                     └───────┘ ┌┴─────────┐
-///                               │ SPI1     │
-///                               │ 25 MHz   │
-///                               ╞═  ═  ═  ═╡
-///                               │ PRESC /2 │
-///                               │ 12.5 MHz │
-///                               └──────────┘
+///                     │    /2 │  │
+///                     └───────┘ ┌┴───────────┐
+///                               │ SPI1       │
+///                               │ 12.5 MHz   │
+///                               ╞═  ═  ═  ═  ╡
+///                               │ PRESC /256 │
+///                               │ 48.8 kHz   │
+///                               └────────────┘
 /// ```
 fn setup_clocks(peripherals: &mut Peripherals) {
     // start up the external high-speed oscillator (HSE)
@@ -167,7 +167,7 @@ fn setup_clocks(peripherals: &mut Peripherals) {
     // set prescalers to /1
     peripherals.RCC.cfgr().modify(|_, w| w
         .hpre().div1() // warning: max. 216 MHz
-        .ppre2().div1() // warning: max. 108 MHz
+        .ppre2().div2() // warning: max. 108 MHz
         .ppre1().div1() // warning: max. 54 MHz
     );
 
@@ -427,19 +427,58 @@ fn main() -> ! {
         .odr8().low()
     );
 
-    // unreset flash
+    // do a JEDEC reset on flash
+    crate::flash::jedec_reset(&peripherals);
+    // wait a bit
+    for _ in 0..10_000 {
+        cortex_m::asm::nop();
+    }
+
+    // pull ~{HOLD}/~{RESET} high (because it's probably configured as HOLD)
     peripherals.GPIOE.odr().modify(|_, w| w
         .odr7().high()
     );
+    // sleep a bit to ensure flash chip gets the hint
+    for _ in 0..1024 {
+        cortex_m::asm::nop();
+    }
 
     // pull ~{write-prot} high
     peripherals.GPIOD.odr().modify(|_, w| w
         .odr12().high()
     );
+    // sleep a bit to ensure flash chip gets the hint
+    for _ in 0..1024 {
+        cortex_m::asm::nop();
+    }
+
+    /*
+    // nuke the flash chip
+    do_with_flash_chip_selected(&peripherals, |p| {
+        let mut asplode1 = [0x66];
+        Spi1::communicate_bytes(p, &mut asplode1)
+    });
+    for _ in 0..4 {
+        cortex_m::asm::nop();
+    }
+    do_with_flash_chip_selected(&peripherals, |p| {
+        let mut asplode2 = [0x99];
+        Spi1::communicate_bytes(p, &mut asplode2)
+    });
+    // t_SWRST = 200µs, 200µs * 25MHz = 5000
+    for _ in 0..5000 {
+        cortex_m::asm::nop();
+    }
+    */
+
     // enable writing
     do_with_flash_chip_selected(&peripherals, |p|
         crate::flash::enable_writing(p)
     );
+    // sleep a bit to ensure flash chip gets the hint
+    for _ in 0..1024 {
+        cortex_m::asm::nop();
+    }
     // read status registers
     let status_register = do_with_flash_chip_selected(&peripherals, |p|
         crate::flash::read_all_status_registers(p)
@@ -735,10 +774,7 @@ fn do_with_flash_chip_selected<T, P: FnMut(&Peripherals) -> T>(
         .odr8().high()
     );
 
-    // wait a bit
-    for _ in 0..1024*1024 {
-        cortex_m::asm::nop();
-    }
+    cortex_m::asm::nop();
 
     ret
 }
