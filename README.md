@@ -79,8 +79,8 @@ which I hope actually works because I designed it myself...
 | --------- | ------------- | ------------------ | ---- |
 | 0b0000000 | 4 s1          | AMS AS1115         | buttons & LEDs |
 | 0b0101001 | 4 s2          | Vishay VEML4031X00 | light sensor |
-| 0b01010ab | 3             | NXP SC18IS606PW    | I2C-SPI bridge |
-| 0b11100ab | 3             | NXP PCA9538D       | I2C port expander |
+| 0b0101000 | 3             | NXP SC18IS606PW    | I2C-SPI bridge |
+| 0b1110000 | 3             | NXP PCA9538D       | I2C port expander |
 
-(Make sure to set the switches on the I2C SPI shuttle board so that the addresses don't conflict
-with the lgiht sensor.)
+(The switches on the I2C-SPI shuttle board set the lowest two address bits; they must be set so that
+the addresses don't conflict with the light sensor.)

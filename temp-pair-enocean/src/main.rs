@@ -101,9 +101,9 @@ fn handle_panic(_info: &PanicInfo) -> ! {
 /// PRESC = 1, SDADEL = 0, SCLDEL = 15, SCLL = 49, SCLH = 40
 ///
 /// For SPI1, we get power-of-two prescalers from /2 to /256, which means we top out at 12.5 MHz.
-/// The 7-segment driver chip (TLC5947) allows up to 30 MHz (15 MHz in 50%-duty cascade operation)
-/// and the flash chip (AT25FF321A) absolutely bottoms out at 30 MHz for the slow-read category, so
-/// 25 MHz is fine.
+/// The 7-segment driver chip (TLC5947) is controlled via an I2C-to-SPI bridge, but just in case, it
+/// allows up to 30 MHz (15 MHz in 50%-duty cascade operation). The flash chip (AT25FF321A)
+/// absolutely bottoms out at 30 MHz for the slow-read category, so 25 MHz is fine.
 ///
 /// Set it all up:
 ///
@@ -124,14 +124,14 @@ fn handle_panic(_info: &PanicInfo) -> ! {
 ///                    │          └────────┘└────────┘└────────┘
 ///                    │╒═══════╕
 ///                    └┤ PPRE2 ├──┐ APB2 (max. 108 MHz)
-///                     │    /2 │  │
-///                     └───────┘ ┌┴───────────┐
-///                               │ SPI1       │
-///                               │ 12.5 MHz   │
-///                               ╞═  ═  ═  ═  ╡
-///                               │ PRESC /256 │
-///                               │ 48.8 kHz   │
-///                               └────────────┘
+///                     │    /1 │  │
+///                     └───────┘ ┌┴─────────┐
+///                               │ SPI1     │
+///                               │ 25 MHz   │
+///                               ╞═  ═  ═  ═╡
+///                               │ PRESC /2 │
+///                               │ 12.5 MHz │
+///                               └──────────┘
 /// ```
 fn setup_clocks(peripherals: &mut Peripherals) {
     // start up the external high-speed oscillator (HSE)
@@ -162,7 +162,7 @@ fn setup_clocks(peripherals: &mut Peripherals) {
     // set prescalers to /1
     peripherals.RCC.cfgr().modify(|_, w| w
         .hpre().div1() // warning: max. 216 MHz
-        .ppre2().div2() // warning: max. 108 MHz
+        .ppre2().div1() // warning: max. 108 MHz
         .ppre1().div1() // warning: max. 54 MHz
     );
 
@@ -182,7 +182,6 @@ fn setup_clocks(peripherals: &mut Peripherals) {
         .gpiocen().enabled()
         .gpioden().enabled()
         .gpioeen().enabled()
-        .gpiogen().enabled()
     );
     peripherals.RCC.apb1enr().modify(|_, w| w
         .usart2en().enabled()
@@ -221,26 +220,21 @@ fn setup_pins(peripherals: &mut Peripherals) {
         .ot7().push_pull()
     );
     peripherals.GPIOB.otyper().modify(|_, w| w
-        .ot0().push_pull()
         .ot10().open_drain()
         .ot11().open_drain()
     );
     peripherals.GPIOC.otyper().modify(|_, w| w
-        .ot6().push_pull()
         .ot15().push_pull()
     );
     peripherals.GPIOD.otyper().modify(|_, w| w
         .ot8().push_pull()
         .ot9().push_pull()
+        .ot11().push_pull()
         .ot12().push_pull()
-        .ot13().push_pull()
     );
     peripherals.GPIOE.otyper().modify(|_, w| w
         .ot7().push_pull()
         .ot8().push_pull()
-    );
-    peripherals.GPIOG.otyper().modify(|_, w| w
-        .ot11().push_pull()
     );
 
     // set pulling on input ports and SPI SCK
@@ -263,27 +257,22 @@ fn setup_pins(peripherals: &mut Peripherals) {
         .moder7().alternate() // SPI1
     );
     peripherals.GPIOB.moder().modify(|_, w| w
-        .moder0().output() // 7seg chip 2 select
         .moder10().alternate() // I2C2
         .moder11().alternate() // I2C2
         .moder14().input() // HMI button push interrupt
     );
     peripherals.GPIOC.moder().modify(|_, w| w
-        .moder6().output() // blank 7seg displays
         .moder15().output() // reset EnOcean module
     );
     peripherals.GPIOD.moder().modify(|_, w| w
         .moder8().alternate() // USART3
         .moder9().alternate() // USART3
+        .moder11().output() // I2C-SPI bridge reset
         .moder12().output() // flash write protection
-        .moder13().output() // 7seg chip 1 select
     );
     peripherals.GPIOE.moder().modify(|_, w| w
         .moder7().output() // reset flash chip
         .moder8().output() // flash chip select for SPI1
-    );
-    peripherals.GPIOG.moder().modify(|_, w| w
-        .moder11().output() // reset 7seg (but actually only ClickID)
     );
 
     // set UART2, I2C and SPI ports to fast
@@ -346,8 +335,8 @@ fn main() -> ! {
     setup_pins(&mut peripherals);
 
     // set up peripherals:
-    // * I2C2 (buttons & LEDs, light sensor)
-    // * SPI1 (flash, 7seg)
+    // * I2C2 (buttons & LEDs, light sensor, 7seg via I2C-SPI bridge)
+    // * SPI1 (flash)
     // * USART2 (EnOcean)
     // * USART3 (debugging)
 
@@ -373,7 +362,7 @@ fn main() -> ! {
         false,
     );
 
-    // speed is always 57_600 b/s
+    // EnOcean speed is always 57_600 b/s
     Usart2::set_up(
         &peripherals,
         divide_u32_to_u16_round(CLOCK_SPEED_HZ, 57_600),
@@ -389,9 +378,121 @@ fn main() -> ! {
     BlinkyLedA8::set_up(&peripherals);
     BlinkyLedA8::turn_on(&peripherals);
 
-    // turn on 7-seg displays
-    peripherals.GPIOC.odr().modify(|_, w| w
-        .odr6().low()
+    // reset the I2C-SPI bridge for the 7-seg displays
+    peripherals.GPIOD.odr().modify(|_, w| w
+        .odr11().low()
+    );
+    for _ in 0..1024 {
+        cortex_m::asm::nop();
+    }
+    peripherals.GPIOD.odr().modify(|_, w| w
+        .odr11().low()
+    );
+    for _ in 0..1024 {
+        cortex_m::asm::nop();
+    }
+
+    const ADDR_I2C_SPI: I2cAddress = I2cAddress::new(0b0101000).unwrap();
+    const ADDR_I2C_EXP: I2cAddress = I2cAddress::new(0b1110000).unwrap();
+
+    // configure the I2C-SPI bridge
+    I2c2::write_data(
+        &peripherals,
+        ADDR_I2C_SPI,
+        &[
+            0xF0, // configure SPI interface
+            (
+                (0b00 << 6) // reserved bits
+                | (0b0 << 5) // MSB first
+                | (0b0 << 4) // reserved bit
+                | (0b00 << 2) // SPI mode 0
+                | (0b00 << 0) // 1875 kHz
+            ),
+        ],
+    );
+    I2c2::write_data(
+        &peripherals,
+        ADDR_I2C_SPI,
+        &[
+            0xF6, // GPIO enable
+            (
+                (0b00000 << 3) // reserved bits
+                | (0b1 << 2) // CS2 is GPIO
+                | (0b1 << 1) // CS1 is GPIO
+                | (0b0 << 1) // CS0 is GPIO
+            ),
+        ],
+    );
+    I2c2::write_data(
+        &peripherals,
+        ADDR_I2C_SPI,
+        &[
+            0xF7, // GPIO mode
+            (
+                (0b00 << 6) // reserved bits
+                | (0b00 << 4) // CS2 is a floating input
+                | (0b00 << 2) // CS1 is a floating input
+                | (0b01 << 0) // CS0 is a push-pull output ("latch" command to chip 1)
+            ),
+        ],
+    );
+    I2c2::write_data(
+        &peripherals,
+        ADDR_I2C_SPI,
+        &[
+            0xF4, // GPIO write
+            (
+                (0b00000 << 3) // reserved bits
+                | (0b0 << 2) // CS2 is an input anyway
+                | (0b0 << 1) // CS1 is an input anyway
+                | (0b0 << 0) // set CS0 low (no latching on chip 1)
+            ),
+        ],
+    );
+
+    // configure the I2C port expander
+    I2c2::write_data(
+        &peripherals,
+        ADDR_I2C_EXP,
+        &[
+            0x02, // polarity inversion
+            0b0000_0000, // invert polarity of no ports
+        ],
+    );
+    I2c2::write_data(
+        &peripherals,
+        ADDR_I2C_EXP,
+        &[
+            0x4F, // output behavior configuration
+            0, // push-pull
+        ],
+    );
+    I2c2::write_data(
+        &peripherals,
+        ADDR_I2C_EXP,
+        &[
+            0x03, // I/O direction
+            (
+                (0b1111 << 4) // IO4 through IO7 are unused, set them as inputs
+                | (0b1 << 3) // IO3 is an input (~{INT}, unused)
+                | (0b0 << 2) // IO2 is an output (PWM, "blank" to both chips)
+                | (0b0 << 1) // IO1 is an output (AN, "latch" command to chip 2)
+                | (0b0 << 0) // IO0 is an output (~{RST}, used for ClickID)
+            ),
+        ],
+    );
+    I2c2::write_data(
+        &peripherals,
+        ADDR_I2C_EXP,
+        &[
+            0x01, // GPIO output
+            (
+                (0b00000 << 3) // IO3 through IO7 are inputs
+                | (0b0 << 2) // request that displays not be shut off
+                | (0b0 << 1) // no latch to chip 2
+                | (0b1 << 0) // ~{RST} up so that ClickID does not interfere
+            ),
+        ],
     );
 
     // 0x00 is actually the broadcast address, but AMS was kinda stupid
