@@ -2,6 +2,7 @@
 #![no_std]
 
 
+mod blinky_led;
 mod crc8;
 mod enocean;
 mod flash;
@@ -18,6 +19,7 @@ use cortex_m_rt::entry;
 use stm32f7::stm32f745::Peripherals;
 use stm32f7::stm32f745::spi1::cr1::BR;
 
+use crate::blinky_led::{BlinkyLed, BlinkyLedA8};
 use crate::i2c::{I2c, I2c2, I2cAddress};
 use crate::spi::{Spi, Spi1, SpiMode};
 use crate::temp_display::TempDisplayState;
@@ -31,18 +33,11 @@ pub const CLOCK_SPEED_HZ: u32 = 25_000_000;
 fn handle_panic(_info: &PanicInfo) -> ! {
     let peripherals = unsafe { Peripherals::steal() };
     loop {
-        peripherals.GPIOA.odr().modify(|_, w| w
-            .odr8().high()
-        );
-
+        BlinkyLedA8::turn_on(&peripherals);
         for _ in 0..1024*1024 {
             cortex_m::asm::nop();
         }
-
-        peripherals.GPIOA.odr().modify(|_, w| w
-            .odr8().low()
-        );
-
+        BlinkyLedA8::turn_off(&peripherals);
         for _ in 0..1024*1024 {
             cortex_m::asm::nop();
         }
@@ -391,18 +386,8 @@ fn main() -> ! {
     );
 
     // LED blinky
-    peripherals.RCC.ahb1enr().modify(|_, w| w
-        .gpioaen().enabled() // clock to GPIOA
-    );
-    peripherals.GPIOA.moder().modify(|_, w| w
-        .moder8().output()
-    );
-    peripherals.GPIOA.otyper().modify(|_, w| w
-        .ot8().push_pull()
-    );
-    peripherals.GPIOA.odr().modify(|_, w| w
-        .odr8().high()
-    );
+    BlinkyLedA8::set_up(&peripherals);
+    BlinkyLedA8::turn_on(&peripherals);
 
     // turn on 7-seg displays
     peripherals.GPIOC.odr().modify(|_, w| w
@@ -421,11 +406,6 @@ fn main() -> ! {
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SHUTDOWN, VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS]);
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SCANLIMIT, VALUE_8800_SCANLIMIT_ALL_DIGITS]);
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_LED_ROW_0, 0, 0, 0, 0, 0, 0, 0, 0]);
-
-    // turn off blinky LED
-    peripherals.GPIOA.odr().modify(|_, w| w
-        .odr8().low()
-    );
 
     // do a JEDEC reset on flash
     crate::flash::jedec_reset(&peripherals);
@@ -497,6 +477,8 @@ fn main() -> ! {
     peripherals.GPIOD.odr().modify(|_, w| w
         .odr12().low()
     );
+
+    BlinkyLedA8::turn_off(&peripherals);
 
     // read outside and inside address and packet format from flash
     let mut address_buffer = [
