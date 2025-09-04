@@ -422,7 +422,7 @@ fn main() -> ! {
                 (0b00000 << 3) // reserved bits
                 | (0b1 << 2) // CS2 is GPIO
                 | (0b1 << 1) // CS1 is GPIO
-                | (0b0 << 1) // CS0 is GPIO
+                | (0b1 << 0) // CS0 is GPIO
             ),
         ],
     );
