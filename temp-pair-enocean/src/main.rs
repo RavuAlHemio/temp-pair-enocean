@@ -28,6 +28,9 @@ use crate::uart::{Uart, Usart2, Usart3};
 
 pub const CLOCK_SPEED_HZ: u32 = 25_000_000;
 
+const ADDR_I2C_SPI: I2cAddress = I2cAddress::new(0b0101000).unwrap();
+const ADDR_I2C_EXP: I2cAddress = I2cAddress::new(0b1110000).unwrap();
+
 
 #[panic_handler]
 fn handle_panic(_info: &PanicInfo) -> ! {
@@ -386,14 +389,11 @@ fn main() -> ! {
         cortex_m::asm::nop();
     }
     peripherals.GPIOD.odr().modify(|_, w| w
-        .odr11().low()
+        .odr11().high()
     );
     for _ in 0..1024 {
         cortex_m::asm::nop();
     }
-
-    const ADDR_I2C_SPI: I2cAddress = I2cAddress::new(0b0101000).unwrap();
-    const ADDR_I2C_EXP: I2cAddress = I2cAddress::new(0b1110000).unwrap();
 
     // configure the I2C-SPI bridge
     I2c2::write_data(
@@ -410,6 +410,9 @@ fn main() -> ! {
             ),
         ],
     );
+
+    BlinkyLedA8::turn_off(&peripherals);
+
     I2c2::write_data(
         &peripherals,
         ADDR_I2C_SPI,
@@ -579,8 +582,6 @@ fn main() -> ! {
         .odr12().low()
     );
 
-    BlinkyLedA8::turn_off(&peripherals);
-
     // read outside and inside address and packet format from flash
     let mut address_buffer = [
         0, 0, 0, 0, // outside address
@@ -639,6 +640,14 @@ fn main() -> ! {
 
     let mut top_display = TempDisplayState::new(true);
     let mut bottom_display = TempDisplayState::new(false);
+
+    // debug: set some values to test the display
+    top_display.set_digit(0, 9, false);
+    top_display.set_digit(1, 8, false);
+    top_display.set_digit(2, 7, false);
+    bottom_display.set_digit(0, 6, false);
+    bottom_display.set_digit(1, 5, false);
+    bottom_display.set_digit(2, 4, false);
 
     update_displays(&peripherals, &top_display, &bottom_display);
 
@@ -1090,19 +1099,76 @@ fn update_displays(
     top_display: &TempDisplayState,
     bottom_display: &TempDisplayState,
 ) {
-    peripherals.GPIOD.odr().modify(|_, w| w
-        .odr13().low() // CS1 low
+    // all CS pins on the I2C-SPI bridge are set to GPIO
+    // but according to the datasheet we can't pass 0, so pass 1
+    const CHIP_SELECT_PATTERN: u8 = 0b001;
+
+    // send top display data via I2C/SPI
+    top_display.send_via_i2c_spi_bridge::<I2c2>(
+        &peripherals,
+        ADDR_I2C_SPI,
+        CHIP_SELECT_PATTERN,
     );
-    top_display.send_via_spi(&peripherals);
-    peripherals.GPIOD.odr().modify(|_, w| w
-        .odr13().high() // CS1 high
+    // pull the chip 1 XLAT pin up, then down again
+    I2c2::write_data(
+        &peripherals,
+        ADDR_I2C_SPI,
+        &[
+            0xF4, // GPIO output
+            (
+                (0b00000 << 3) // reserved pins
+                | (0b0 << 2) // CS2 is an input anyway
+                | (0b0 << 1) // CS1 is an input anyway
+                | (0b1 << 0) // pull CS0 (chip 1 XLAT) up
+            ),
+        ],
+    );
+    I2c2::write_data(
+        &peripherals,
+        ADDR_I2C_SPI,
+        &[
+            0xF4,
+            (
+                (0b00000 << 3)
+                | (0b0 << 2)
+                | (0b0 << 1)
+                | (0b0 << 0) // down this time
+            ),
+        ],
     );
 
-    peripherals.GPIOB.odr().modify(|_, w| w
-        .odr0().low() // CS2 low
+    // same for the bottom display
+    bottom_display.send_via_i2c_spi_bridge::<I2c2>(
+        &peripherals,
+        ADDR_I2C_SPI,
+        CHIP_SELECT_PATTERN,
     );
-    bottom_display.send_via_spi(&peripherals);
-    peripherals.GPIOB.odr().modify(|_, w| w
-        .odr0().high() // CS2 high
+    I2c2::write_data(
+        &peripherals,
+        ADDR_I2C_EXP,
+        &[
+            0x01, // GPIO output
+            (
+                (0b0000 << 4) // IO4-IO7 unused and configured as inputs
+                | (0b0 << 3) // IO3 is an input
+                | (0b0 << 2) // IO2 is "blank" and should be off
+                | (0b1 << 1) // IO1 is "latch" for chip 2, this is the important one
+                | (0b1 << 0) // IO0 is ~{ClickID} so keep it high
+            ),
+        ],
+    );
+    I2c2::write_data(
+        &peripherals,
+        ADDR_I2C_EXP,
+        &[
+            0x01,
+            (
+                (0b0000 << 4)
+                | (0b0 << 3)
+                | (0b0 << 2)
+                | (0b0 << 1) // and down again
+                | (0b1 << 0)
+            ),
+        ],
     );
 }

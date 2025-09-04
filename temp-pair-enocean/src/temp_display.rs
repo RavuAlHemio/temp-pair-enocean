@@ -2,6 +2,7 @@
 use bitflags::bitflags;
 use stm32f7::stm32f745::Peripherals;
 
+use crate::i2c::{I2c, I2cAddress};
 use crate::spi::{Spi, Spi1};
 
 
@@ -108,7 +109,9 @@ impl TempDisplayState {
         }
     }
 
-    fn to_spi_bytes(&self) -> [u8; 36] {
+    fn write_spi_bytes(&self, spi_bytes: &mut [u8]) {
+        assert_eq!(spi_bytes.len(), 36);
+
         const ELEMENTS: [SegmentCombo; 8] = [
             SegmentCombo::DECIMAL_POINT,
             SegmentCombo::MIDDLE,
@@ -120,7 +123,6 @@ impl TempDisplayState {
             SegmentCombo::TOP,
         ];
 
-        let mut ret = [0u8; 36];
         for (i, lit_segment) in self.lit_segments.iter().copied().enumerate() {
             let digit_ret_offset = 12 * i;
 
@@ -151,16 +153,14 @@ impl TempDisplayState {
 
             for (j, brightness_pair) in brightness_pairs.iter().copied().enumerate() {
                 let segment_ret_offset = 3 * j;
-                ret[digit_ret_offset + segment_ret_offset + 0] =
+                spi_bytes[digit_ret_offset + segment_ret_offset + 0] =
                     ((brightness_pair >> 16) & 0xFF) as u8;
-                ret[digit_ret_offset + segment_ret_offset + 1] =
+                spi_bytes[digit_ret_offset + segment_ret_offset + 1] =
                     ((brightness_pair >> 8) & 0xFF) as u8;
-                ret[digit_ret_offset + segment_ret_offset + 2] =
+                spi_bytes[digit_ret_offset + segment_ret_offset + 2] =
                     ((brightness_pair >> 0) & 0xFF) as u8;
             }
         }
-
-        ret
     }
 
     pub fn set_brightness(&mut self, brightness: Brightness) {
@@ -201,7 +201,24 @@ impl TempDisplayState {
     }
 
     pub fn send_via_spi(&self, peripherals: &Peripherals) {
-        let mut spi_bytes = self.to_spi_bytes();
+        let mut spi_bytes = [0u8; 36];
+        self.write_spi_bytes(&mut spi_bytes);
         Spi1::communicate_bytes(&peripherals, &mut spi_bytes);
+    }
+
+    pub fn send_via_i2c_spi_bridge<I: I2c>(
+        &self,
+        peripherals: &Peripherals,
+        bridge_address: I2cAddress,
+        chip_select_pattern: u8,
+    ) {
+        if chip_select_pattern < 0b001 || chip_select_pattern > 0b111 {
+            panic!("invalid chip select pattern");
+        }
+
+        let mut i2c_bytes = [0u8; 37];
+        i2c_bytes[0] = chip_select_pattern;
+        self.write_spi_bytes(&mut i2c_bytes[1..37]);
+        I::write_data(peripherals, bridge_address, &i2c_bytes);
     }
 }
