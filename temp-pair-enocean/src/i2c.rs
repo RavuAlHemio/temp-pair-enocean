@@ -69,7 +69,7 @@ pub trait I2c {
 
         // set address and write bit
         i2c.cr2().modify(|_, w| w
-            .sadd().set(address.as_u8() as u16)
+            .sadd().set((address.as_u8() << 1) as u16) // 7-bit addresses are shifted one left
             .rd_wrn().write() // we are writing
             .nbytes().set(data.len() as u8)
             .reload().clear_bit() // no reloading after 255 bytes
@@ -113,7 +113,7 @@ pub trait I2c {
 
         // set address and write bit
         i2c.cr2().modify(|_, w| w
-            .sadd().set(address.as_u8() as u16)
+            .sadd().set((address.as_u8() << 1) as u16) // 7-bit addresses are shifted one left
             .rd_wrn().read() // we are reading
             .nbytes().set(data.len() as u8)
             .reload().clear_bit() // no reloading after 255 bytes
