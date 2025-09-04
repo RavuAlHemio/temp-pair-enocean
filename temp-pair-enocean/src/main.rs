@@ -410,9 +410,6 @@ fn main() -> ! {
             ),
         ],
     );
-
-    BlinkyLedA8::turn_off(&peripherals);
-
     I2c2::write_data(
         &peripherals,
         ADDR_I2C_SPI,
@@ -650,6 +647,8 @@ fn main() -> ! {
     bottom_display.set_digit(2, 4, false);
 
     update_displays(&peripherals, &top_display, &bottom_display);
+
+    BlinkyLedA8::turn_off(&peripherals);
 
     let mut app_state = AppState::Idle;
     let mut new_setup_nibbles: [u8; 28] = [0; 28];
