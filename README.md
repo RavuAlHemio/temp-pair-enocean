@@ -37,19 +37,23 @@ which I hope actually works because I designed it myself...
 |    2 | SPI CIPO      | PA6 ⁎  | SPI peripheral → controller, slots 1-3 (here: flash) |
 |    2 | SPI COPI      | PA7 ⁎  | SPI controller → peripheral, slots 1-3 (here: flash) |
 |    2 | PWM           | PD12   | flash write protection |
-|    3 | RST           | PD11   | reset I2C-SPI bridge |
-|    3 | I2C SCL       | PB10 ⁎ | I2C clock, slots 1-4 (here: SPI bridge to 7seg) |
-|    3 | I2C SDA       | PB11 ⁎ | I2C data, slots 1-4 (here: SPI bridge to 7seg) |
-|  4.1 | INT           | PB14   | button pressed interrupt |
-|  4.1 | I2C SCL       | PB10 ⁎ | I2C clock, slots 1-4 (here: buttons & LEDs) |
-|  4.1 | I2C SDA       | PB11 ⁎ | I2C data, slots 1-4 (here: buttons & LEDs) |
-|  4.2 | SPI CS        | PD15   | Click ID for light sensor board |
-|  4.2 | I2C SCL       | PB10 ⁎ | I2C clock, slots 1-4 (here: light sensor) |
-|  4.2 | I2C SDA       | PB11 ⁎ | I2C data, slots 1-4 (here: light sensor) |
-|  4.3 | UART M→B      | PD9    | reserved for emergency UART, PC to board |
-|  4.3 | UART B→M      | PD8    | reserved for emergency UART, board to PC |
+| 3 ≣1 | RST           | PD11   | reset I2C-SPI bridge |
+| 3 ≣1 | I2C SCL       | PB10 ⁎ | I2C clock, slots 1-4 (here: SPI bridge to 7seg) |
+| 3 ≣1 | I2C SDA       | PB11 ⁎ | I2C data, slots 1-4 (here: SPI bridge to 7seg) |
+| 3 ≣2 | SPI CS        | PD13   | Click ID for light sensor board |
+| 3 ≣2 | I2C SCL       | PB10 ⁎ | I2C clock, slots 1-4 (here: light sensor) |
+| 3 ≣2 | I2C SDA       | PB11 ⁎ | I2C data, slots 1-4 (here: light sensor) |
+|    4 | INT           | PB14   | button pressed interrupt |
+|    4 | I2C SCL       | PB10 ⁎ | I2C clock, slots 1-4 (here: buttons & LEDs) |
+|    4 | I2C SDA       | PB11 ⁎ | I2C data, slots 1-4 (here: buttons & LEDs) |
+| 4 ⚟2 | UART M→B      | PD9    | reserved for emergency UART, PC to board |
+| 4 ⚟2 | UART B→M      | PD8    | reserved for emergency UART, board to PC |
 
 ⁎ This pin is used by multiple mikroBUS boards cooperatively.
+
+≣ Multiple boards are stacked on each other (lowest is 1).
+
+⚟ A mikroBUS shuttle is used to connect this board.
 
 ## µC pin configuration
 
@@ -68,7 +72,7 @@ which I hope actually works because I designed it myself...
 | PD9  | AF7 PP? | USART3 Rx (emergency, PC to board) |
 | PD11 | DO PP   | 7seg SPI bridge reset |
 | PD12 | DO PP   | flash write protection |
-| PD15 | DI Flt  | not used |
+| PD13 | DI Flt  | not used |
 | PE7  | DO PP   | reset flash chip |
 | PE8  | DO PP   | flash chip select for SPI1 |
 
