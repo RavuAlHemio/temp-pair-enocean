@@ -638,6 +638,10 @@ fn main() -> ! {
     let mut top_display = TempDisplayState::new(true);
     let mut bottom_display = TempDisplayState::new(false);
 
+    // set the brightness to full by default
+    let fullbright = Brightness::new(0x0FFF).unwrap();
+    top_display.set_brightness(fullbright);
+    bottom_display.set_brightness(fullbright);
 
     update_displays(&peripherals, &top_display, &bottom_display);
 
