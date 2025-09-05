@@ -463,14 +463,6 @@ fn main() -> ! {
         &peripherals,
         ADDR_I2C_EXP,
         &[
-            0x4F, // output behavior configuration
-            0, // push-pull
-        ],
-    );
-    I2c2::write_data(
-        &peripherals,
-        ADDR_I2C_EXP,
-        &[
             0x03, // I/O direction
             (
                 (0b1111 << 4) // IO4 through IO7 are unused, set them as inputs
@@ -492,6 +484,14 @@ fn main() -> ! {
                 | (0b0 << 1) // no latch to chip 2
                 | (0b1 << 0) // ~{RST} up so that ClickID does not interfere
             ),
+        ],
+    );
+    I2c2::write_data(
+        &peripherals,
+        ADDR_I2C_EXP,
+        &[
+            0x4F, // output behavior configuration
+            0, // push-pull
         ],
     );
 
