@@ -72,7 +72,7 @@ which I hope actually works because I designed it myself...
 | PD9  | AF7 PP? | USART3 Rx (emergency, PC to board) |
 | PD11 | DO PP   | 7seg SPI bridge reset |
 | PD12 | DO PP   | flash write protection |
-| PD13 | DI Flt  | not used |
+| PD13 | DI Flt  | not used (Click ID for light sensor board) |
 | PE7  | DO PP   | reset flash chip |
 | PE8  | DO PP   | flash chip select for SPI1 |
 
