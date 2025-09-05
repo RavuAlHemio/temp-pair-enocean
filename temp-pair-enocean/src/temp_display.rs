@@ -225,28 +225,8 @@ impl TempDisplayState {
         // the data is only transmitted on the SPI bus
         // when the the transmission on the I2C bus has finished
         if wait {
-            // the caller wants us to await the completion of the transmission
-            // the SPI bus speed is 1875 kHz
-            const INSTRUCTION_COUNT: u64 = 37 * 8 * (crate::CLOCK_SPEED_HZ as u64) / 1_875_000;
-            const LOOP_COUNT: u32 = {
-                let lc = INSTRUCTION_COUNT / 2;
-                if lc > (u32::MAX as u64) {
-                    panic!("too large");
-                }
-                lc as u32
-            };
-            const LOOP_COUNT_WITH_HEADROOM: u32 = LOOP_COUNT + 1;
-
-            unsafe {
-                core::arch::asm!(
-                    "
-                        420:
-                            subs {ctr}, {ctr}, #1
-                            /* 'eq' means zero flag is 1 */
-                            beq 420b
-                    ",
-                    ctr = inout(reg) LOOP_COUNT_WITH_HEADROOM => _,
-                );
+            for _ in 0..1024 {
+                cortex_m::asm::nop();
             }
         }
     }
