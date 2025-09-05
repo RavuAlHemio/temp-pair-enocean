@@ -643,7 +643,7 @@ fn main() -> ! {
     top_display.set_brightness(fullbright);
     bottom_display.set_brightness(fullbright);
 
-    update_displays(&peripherals, &top_display, &bottom_display);
+    update_displays(&peripherals, &mut top_display, &mut bottom_display, true);
 
     BlinkyLedA8::turn_off(&peripherals);
 
@@ -652,16 +652,13 @@ fn main() -> ! {
     loop {
         // EnOcean logic
         let packet_result = crate::enocean::process_one_packet(&peripherals);
-        let display_updated = act_upon_one_packet(
+        act_upon_one_packet(
             packet_result,
             outside_address, outside_format,
             inside_address, inside_format,
             &mut top_display,
             &mut bottom_display,
         );
-        if display_updated {
-            update_displays(&peripherals, &top_display, &bottom_display);
-        }
 
         // HMI logic
         if peripherals.GPIOB.idr().read().idr14().is_low() {
@@ -838,9 +835,15 @@ fn main() -> ! {
                         }
                     },
                 }
-
-                update_displays(&peripherals, &top_display, &bottom_display);
             }
+
+            // finally, update the displays if something changed
+            update_displays(
+                &peripherals,
+                &mut top_display,
+                &mut bottom_display,
+                false,
+            );
         }
     }
 }
@@ -901,32 +904,30 @@ fn act_upon_one_packet(
     inside_format: u32,
     top_display: &mut TempDisplayState,
     bottom_display: &mut TempDisplayState,
-) -> bool {
-    let mut display_updated = false;
-
+) {
     // needs to be an EnOcean packet
     let (packet_type, payload) = match packet_result {
         enocean::PacketResult::Packet { packet_type, payload }
             => (packet_type, payload),
-        _ => return display_updated,
+        _ => return,
     };
 
     // needs to be an ERP1 packet
     if packet_type != crate::enocean::PacketType::RadioErp1 {
-        return display_updated;
+        return;
     }
 
     // must have at least 1 byte for packet type
     let payload_data = payload.data();
     if payload_data.len() < 1 {
-        return display_updated;
+        return;
     }
 
     let (data_slice, sender) = match payload_data[0] {
         0xF6|0xD5 => {
             // one type identifier, one byte of data, four of sender, one of status
             if payload_data.len() != 7 {
-                return display_updated;
+                return;
             }
 
             let sender = u32::from_be_bytes(payload_data[2..6].try_into().unwrap());
@@ -935,7 +936,7 @@ fn act_upon_one_packet(
         0xA5 => {
             // one type identifier, four bytes of data, four of sender, one of status
             if payload_data.len() != 10 {
-                return display_updated;
+                return;
             }
 
             let sender = u32::from_be_bytes(payload_data[5..9].try_into().unwrap());
@@ -946,7 +947,7 @@ fn act_upon_one_packet(
             // (the additional CRC only shows up in the radio protocol;
             // the serial protocol does its own CRCs)
             if payload_data.len() < 6 {
-                return display_updated;
+                return;
             }
 
             let data = &payload_data[1..payload_data.len()-5];
@@ -955,7 +956,7 @@ fn act_upon_one_packet(
         },
         _ => {
             // some other type of radio packet, we don't care
-            return display_updated;
+            return;
         },
     };
 
@@ -964,24 +965,20 @@ fn act_upon_one_packet(
         // ff-xx-xx
         if !format_matches(outside_format, payload_data[0]) {
             // no, this packet is in a different format
-            return display_updated;
+            return;
         }
 
         // decode the temperature value
-        let decoded = decode_temperature(outside_format, data_slice, top_display);
-        display_updated = display_updated || decoded;
+        decode_temperature(outside_format, data_slice, top_display);
     } else if sender == inside_address {
         if !format_matches(inside_format, payload_data[0]) {
             // no, this packet is in a different format
-            return display_updated;
+            return;
         }
 
         // decode the temperature value
-        let decoded = decode_temperature(inside_format, data_slice, bottom_display);
-        display_updated = display_updated || decoded;
+        decode_temperature(inside_format, data_slice, bottom_display);
     }
-
-    display_updated
 }
 
 fn format_matches(
@@ -997,20 +994,20 @@ fn decode_temperature(
     format: u32,
     data_slice: &[u8],
     display: &mut TempDisplayState,
-) -> bool {
+) {
     if format == 0xA5_09_04 {
         // HHHH_HHHH CCCC_CCCC TTTT_TTTT 0000_Lxx0
         let data = match data_slice.try_into() {
             Ok(ds) => u32::from_be_bytes(ds),
             Err(_) => {
                 // wrong format
-                return false;
+                return;
             },
         };
 
         if data & 0b1000 == 0 {
             // this is a teach-in packet, ignore it
-            return false;
+            return;
         }
 
         // 8 bits of temperature in units of 0.2 °C
@@ -1029,20 +1026,19 @@ fn decode_temperature(
         display.set_digit(0, temperature_digit_0, false);
         display.set_digit(1, temperature_digit_1, true);
         display.set_digit(2, temperature_digit_2, false);
-        true
     } else if format == 0xA5_04_03 {
         // HHHH_HHHH 0000_00TT TTTT_TTTT 0000_L00x
         let data = match data_slice.try_into() {
             Ok(ds) => u32::from_be_bytes(ds),
             Err(_) => {
                 // wrong format
-                return false;
+                return;
             },
         };
 
         if data & 0b1000 == 0 {
             // this is a teach-in packet, ignore it
-            return false;
+            return;
         }
 
         // 10 bits of temperature from -20 to +60 °C
@@ -1083,96 +1079,99 @@ fn decode_temperature(
             display.set_digit(1, temperature_digit_1, true);
             display.set_digit(2, temperature_digit_2, false);
         }
-        true
     } else {
         // don't know how to decode this format
-        false
     }
 }
 
 fn update_displays(
     peripherals: &Peripherals,
-    top_display: &TempDisplayState,
-    bottom_display: &TempDisplayState,
+    top_display: &mut TempDisplayState,
+    bottom_display: &mut TempDisplayState,
+    force: bool,
 ) {
     // all CS pins on the I2C-SPI bridge are set to GPIO
     // but according to the datasheet we can't pass 0, so pass 1
     const CHIP_SELECT_PATTERN: u8 = 0b001;
 
-    // send top display data via I2C/SPI
-    top_display.send_via_i2c_spi_bridge::<I2c2>(
-        &peripherals,
-        ADDR_I2C_SPI,
-        CHIP_SELECT_PATTERN,
-        true,
-    );
-    // pull the chip 1 XLAT pin up, wait a bit, then pull it down again
-    I2c2::write_data(
-        &peripherals,
-        ADDR_I2C_SPI,
-        &[
-            0xF4, // GPIO output
-            (
-                (0b00000 << 3) // reserved pins
-                | (0b0 << 2) // CS2 is an input anyway
-                | (0b0 << 1) // CS1 is an input anyway
-                | (0b1 << 0) // pull CS0 (chip 1 XLAT) up
-            ),
-        ],
-    );
-    for _ in 0..1024 {
-        cortex_m::asm::nop();
+    if force || top_display.is_dirty() {
+        // send top display data via I2C/SPI
+        top_display.send_via_i2c_spi_bridge::<I2c2>(
+            &peripherals,
+            ADDR_I2C_SPI,
+            CHIP_SELECT_PATTERN,
+            true,
+        );
+        // pull the chip 1 XLAT pin up, wait a bit, then pull it down again
+        I2c2::write_data(
+            &peripherals,
+            ADDR_I2C_SPI,
+            &[
+                0xF4, // GPIO output
+                (
+                    (0b00000 << 3) // reserved pins
+                    | (0b0 << 2) // CS2 is an input anyway
+                    | (0b0 << 1) // CS1 is an input anyway
+                    | (0b1 << 0) // pull CS0 (chip 1 XLAT) up
+                ),
+            ],
+        );
+        for _ in 0..1024 {
+            cortex_m::asm::nop();
+        }
+        I2c2::write_data(
+            &peripherals,
+            ADDR_I2C_SPI,
+            &[
+                0xF4,
+                (
+                    (0b00000 << 3)
+                    | (0b0 << 2)
+                    | (0b0 << 1)
+                    | (0b0 << 0) // down this time
+                ),
+            ],
+        );
     }
-    I2c2::write_data(
-        &peripherals,
-        ADDR_I2C_SPI,
-        &[
-            0xF4,
-            (
-                (0b00000 << 3)
-                | (0b0 << 2)
-                | (0b0 << 1)
-                | (0b0 << 0) // down this time
-            ),
-        ],
-    );
 
-    // same for the bottom display
-    bottom_display.send_via_i2c_spi_bridge::<I2c2>(
-        &peripherals,
-        ADDR_I2C_SPI,
-        CHIP_SELECT_PATTERN,
-        true,
-    );
-    I2c2::write_data(
-        &peripherals,
-        ADDR_I2C_EXP,
-        &[
-            0x01, // GPIO output
-            (
-                (0b0000 << 4) // IO4-IO7 unused and configured as inputs
-                | (0b0 << 3) // IO3 is an input
-                | (0b0 << 2) // IO2 is "blank" and should be off
-                | (0b1 << 1) // IO1 is "latch" for chip 2, this is the important one
-                | (0b1 << 0) // IO0 is ~{ClickID} so keep it high
-            ),
-        ],
-    );
-    for _ in 0..1024 {
-        cortex_m::asm::nop();
+    if force || bottom_display.is_dirty() {
+        // same for the bottom display
+        bottom_display.send_via_i2c_spi_bridge::<I2c2>(
+            &peripherals,
+            ADDR_I2C_SPI,
+            CHIP_SELECT_PATTERN,
+            true,
+        );
+        I2c2::write_data(
+            &peripherals,
+            ADDR_I2C_EXP,
+            &[
+                0x01, // GPIO output
+                (
+                    (0b0000 << 4) // IO4-IO7 unused and configured as inputs
+                    | (0b0 << 3) // IO3 is an input
+                    | (0b0 << 2) // IO2 is "blank" and should be off
+                    | (0b1 << 1) // IO1 is "latch" for chip 2, this is the important one
+                    | (0b1 << 0) // IO0 is ~{ClickID} so keep it high
+                ),
+            ],
+        );
+        for _ in 0..1024 {
+            cortex_m::asm::nop();
+        }
+        I2c2::write_data(
+            &peripherals,
+            ADDR_I2C_EXP,
+            &[
+                0x01,
+                (
+                    (0b0000 << 4)
+                    | (0b0 << 3)
+                    | (0b0 << 2)
+                    | (0b0 << 1) // and down again
+                    | (0b1 << 0)
+                ),
+            ],
+        );
     }
-    I2c2::write_data(
-        &peripherals,
-        ADDR_I2C_EXP,
-        &[
-            0x01,
-            (
-                (0b0000 << 4)
-                | (0b0 << 3)
-                | (0b0 << 2)
-                | (0b0 << 1) // and down again
-                | (0b1 << 0)
-            ),
-        ],
-    );
 }

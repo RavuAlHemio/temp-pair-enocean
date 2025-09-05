@@ -99,6 +99,7 @@ pub struct TempDisplayState {
     lit_segments: [SegmentCombo; 3],
     brightness: Brightness,
     reversed_order: bool,
+    dirty: bool,
 }
 impl TempDisplayState {
     pub fn new(reversed_order: bool) -> Self {
@@ -106,6 +107,7 @@ impl TempDisplayState {
             lit_segments: [SegmentCombo::empty(); 3],
             brightness: Brightness::new(1).unwrap(),
             reversed_order,
+            dirty: false,
         }
     }
 
@@ -163,14 +165,22 @@ impl TempDisplayState {
         }
     }
 
+    pub fn is_dirty(&self) -> bool { self.dirty }
+
     pub fn set_brightness(&mut self, brightness: Brightness) {
-        self.brightness = brightness;
+        if self.brightness != brightness {
+            self.brightness = brightness;
+            self.dirty = true;
+        }
     }
 
     pub fn set_segments(&mut self, position: usize, segments: SegmentCombo) {
         assert!(position < 3);
         let real_position = if self.reversed_order { 2 - position } else { position };
-        self.lit_segments[real_position] = segments;
+        if self.lit_segments[real_position] != segments {
+            self.lit_segments[real_position] = segments;
+            self.dirty = true;
+        }
     }
 
     pub fn set_digit(&mut self, position: usize, ascii_digit: u8, decimal_point: bool) {
@@ -200,14 +210,17 @@ impl TempDisplayState {
         self.set_digit(position, ascii_digit, decimal_point);
     }
 
-    pub fn send_via_spi(&self, peripherals: &Peripherals) {
+    pub fn send_via_spi(&mut self, peripherals: &Peripherals) {
         let mut spi_bytes = [0u8; 36];
         self.write_spi_bytes(&mut spi_bytes);
         Spi1::communicate_bytes(&peripherals, &mut spi_bytes);
+
+        // the display contents now match our stored data
+        self.dirty = false;
     }
 
     pub fn send_via_i2c_spi_bridge<I: I2c>(
-        &self,
+        &mut self,
         peripherals: &Peripherals,
         bridge_address: I2cAddress,
         chip_select_pattern: u8,
@@ -221,6 +234,9 @@ impl TempDisplayState {
         i2c_bytes[0] = chip_select_pattern;
         self.write_spi_bytes(&mut i2c_bytes[1..37]);
         I::write_data(peripherals, bridge_address, &i2c_bytes);
+
+        // the display contents now match our stored data
+        self.dirty = false;
 
         // the data is only transmitted on the SPI bus
         // when the the transmission on the I2C bus has finished
