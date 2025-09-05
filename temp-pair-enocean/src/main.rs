@@ -22,7 +22,7 @@ use stm32f7::stm32f745::spi1::cr1::BR;
 use crate::blinky_led::{BlinkyLed, BlinkyLedA8};
 use crate::i2c::{I2c, I2c2, I2cAddress};
 use crate::spi::{Spi, Spi1, SpiMode};
-use crate::temp_display::TempDisplayState;
+use crate::temp_display::{Brightness, TempDisplayState};
 use crate::uart::{Uart, Usart2, Usart3};
 
 
@@ -638,13 +638,6 @@ fn main() -> ! {
     let mut top_display = TempDisplayState::new(true);
     let mut bottom_display = TempDisplayState::new(false);
 
-    // debug: set some values to test the display
-    top_display.set_digit(0, 9, false);
-    top_display.set_digit(1, 8, false);
-    top_display.set_digit(2, 7, false);
-    bottom_display.set_digit(0, 6, false);
-    bottom_display.set_digit(1, 5, false);
-    bottom_display.set_digit(2, 4, false);
 
     update_displays(&peripherals, &top_display, &bottom_display);
 
