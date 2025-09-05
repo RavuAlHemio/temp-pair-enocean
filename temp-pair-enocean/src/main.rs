@@ -16,8 +16,10 @@ mod uart;
 use core::panic::PanicInfo;
 
 use cortex_m_rt::entry;
-use stm32f7::stm32f745::Peripherals;
+use critical_section::Mutex;
+use stm32f7::stm32f745::{Interrupt, interrupt, Peripherals};
 use stm32f7::stm32f745::spi1::cr1::BR;
+use vcell::VolatileCell;
 
 use crate::blinky_led::{BlinkyLed, BlinkyLedA8};
 use crate::i2c::{I2c, I2c2, I2cAddress};
@@ -28,9 +30,15 @@ use crate::uart::{Uart, Usart2, Usart3};
 
 pub const CLOCK_SPEED_HZ: u32 = 25_000_000;
 
+// 0x00 is actually the broadcast address, but AMS was kinda stupid
+const ADDR_8800: I2cAddress = I2cAddress::new(0x00).unwrap();
 const ADDR_I2C_SPI: I2cAddress = I2cAddress::new(0b0101000).unwrap();
 const ADDR_I2C_EXP: I2cAddress = I2cAddress::new(0b1110000).unwrap();
 const ADDR_AMB_SEN: I2cAddress = I2cAddress::new(0b0101001).unwrap();
+
+const REG_8800_KEYA: u8 = 0x1C;
+
+static BUTTONS_PRESSED: Mutex<VolatileCell<u16>> = Mutex::new(VolatileCell::new(0));
 
 
 #[panic_handler]
@@ -246,10 +254,10 @@ fn setup_pins(peripherals: &mut Peripherals) {
         .pupdr5().pull_down() // idle SPI1 SCK polarity: low
     );
     peripherals.GPIOB.pupdr().modify(|_, w| w
-        .pupdr14().pull_up() // AS1115 datasheet says: either floating or GND
+        .pupdr14().pull_up() // datasheet says AS1115 leaves this floating or pulls to GND
     );
     peripherals.GPIOD.pupdr().modify(|_, w| w
-        .pupdr13().floating() // not used
+        .pupdr13().floating() // not used (Click ID for light sensor board)
     );
 
     // set port modes (input/output/analog/alternate)
@@ -521,13 +529,10 @@ fn main() -> ! {
         ],
     );
 
-    // 0x00 is actually the broadcast address, but AMS was kinda stupid
-    const ADDR_8800: I2cAddress = I2cAddress::new(0x00).unwrap();
     const REG_8800_SHUTDOWN: u8 = 0x0C;
     const VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS: u8 = 0x01;
     const REG_8800_SCANLIMIT: u8 = 0x0B;
     const VALUE_8800_SCANLIMIT_ALL_DIGITS: u8 = 0b111;
-    const REG_8800_KEYA: u8 = 0x1C;
     const REG_8800_LED_ROW_0: u8 = 0x01;
 
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SHUTDOWN, VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS]);
@@ -671,6 +676,26 @@ fn main() -> ! {
 
     update_displays(&peripherals, &mut top_display, &mut bottom_display, true);
 
+    // allow 8800 to interrupt us (PB14)
+    peripherals.EXTI.rtsr().modify(|_, w| w
+        .tr14().disabled() // do not trigger on rising signal
+    );
+    peripherals.EXTI.ftsr().modify(|_, w| w
+        .tr14().enabled() // trigger on falling signal
+    );
+    peripherals.EXTI.imr().modify(|_, w| w
+        .mr14().unmasked()
+    );
+    // link external interrupt 14 with GPIOB
+    // TODO: port to safe code once fields are merged: https://github.com/stm32-rs/stm32-rs/pull/1265
+    peripherals.SYSCFG.exticr4().modify(|_, w| unsafe { w
+        .exti14().bits(0b0001)
+    });
+    // unmask interrupt
+    unsafe {
+        cortex_m::peripheral::NVIC::unmask(Interrupt::EXTI15_10);
+    }
+
     BlinkyLedA8::turn_off(&peripherals);
 
     let mut app_state = AppState::Idle;
@@ -707,23 +732,17 @@ fn main() -> ! {
         bottom_display.set_brightness(brightness_u12);
 
         // HMI logic
-        if peripherals.GPIOB.idr().read().idr14().is_low() {
-            // 8800 wants us to read the buttons
-            I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_KEYA]);
-            let mut key_values = [0u8; 2];
-            I2c2::read_data(&peripherals, ADDR_8800, &mut key_values);
-
-            // by default: 0 pressed, 1 not pressed
-            let negated_all_key_values =
-                u16::from(key_values[0]) << 8
-                | u16::from(key_values[1]);
-            let all_key_values = !negated_all_key_values;
-
+        let all_key_values = critical_section::with(|cs| {
+            let guard = BUTTONS_PRESSED.borrow(cs);
+            let value = guard.get();
+            guard.set(0);
+            value
+        });
+        if all_key_values != 0 {
             // popcount
             let pop_count = all_key_values.count_ones();
-            if pop_count == 0 {
-                // nothing pressed; do nothing
-            } else if pop_count > 1 {
+            debug_assert_ne!(pop_count, 0);
+            if pop_count > 1 {
                 // multiple buttons pressed; go back to idle
                 app_state = AppState::Idle;
             } else {
@@ -1240,5 +1259,35 @@ fn update_displays(
                 ),
             ],
         );
+    }
+}
+
+#[interrupt]
+fn EXTI15_10() {
+    let peripherals = unsafe { Peripherals::steal() };
+
+    if peripherals.EXTI.pr().read().pr14().is_pending() {
+        // 8800 wants us to read the buttons
+
+        // clear the pending bit
+        peripherals.EXTI.pr().modify(|_, w| w.pr14().clear_bit_by_one());
+
+        // ask for the buttons
+        I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_KEYA]);
+        let mut key_values = [0u8; 2];
+        I2c2::read_data(&peripherals, ADDR_8800, &mut key_values);
+
+        // by default: 0 pressed, 1 not pressed; invert that
+        let negated_all_key_values =
+            u16::from(key_values[0]) << 8
+            | u16::from(key_values[1]);
+        let all_key_values = !negated_all_key_values;
+
+        // store
+        critical_section::with(|cs| {
+            BUTTONS_PRESSED
+                .borrow(cs)
+                .set(all_key_values);
+        });
     }
 }
