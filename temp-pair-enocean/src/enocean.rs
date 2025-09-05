@@ -5,7 +5,6 @@ use from_to_repr::from_to_other;
 use stm32f7::stm32f745::Peripherals;
 
 use crate::crc8::crc8;
-use crate::i2c::{I2c, I2c2, I2cAddress};
 use crate::uart::{Uart, Usart2};
 
 
