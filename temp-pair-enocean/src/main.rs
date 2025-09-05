@@ -1091,42 +1091,63 @@ fn decode_temperature(
         // let's aim for a single decimal digit
         let temperature_bits = (data >> 8) & 0x3FF;
         let temperature_tenth_celsius = ((temperature_bits * 800) / 1024) as i32 - 200;
-
-        if temperature_tenth_celsius <= -10 {
-            // -TT
-            let abs_temp = (-temperature_tenth_celsius) / 10;
-            let temperature_digit_0 = b'-';
-            let temperature_digit_1 = b'0' + u8::try_from(abs_temp / 10).unwrap();
-            let temperature_digit_2 = b'0' + u8::try_from(abs_temp % 10).unwrap();
-            display.set_digit(0, temperature_digit_0, false);
-            display.set_digit(1, temperature_digit_1, false);
-            display.set_digit(2, temperature_digit_2, false);
-        } else if temperature_tenth_celsius < 0 {
-            // -T.T
-            let abs_temp = -temperature_tenth_celsius;
-            let temperature_digit_0 = b'-';
-            let temperature_digit_1 = b'0' + u8::try_from(abs_temp / 10).unwrap();
-            let temperature_digit_2 = b'0' + u8::try_from(abs_temp % 10).unwrap();
-            display.set_digit(0, temperature_digit_0, false);
-            display.set_digit(1, temperature_digit_1, true);
-            display.set_digit(2, temperature_digit_2, false);
-        } else if temperature_tenth_celsius < 100 {
-            let temperature_digit_0 = b' ';
-            let temperature_digit_1 = b'0' + u8::try_from(temperature_tenth_celsius / 10).unwrap();
-            let temperature_digit_2 = b'0' + u8::try_from(temperature_tenth_celsius % 10).unwrap();
-            display.set_digit(0, temperature_digit_0, false);
-            display.set_digit(1, temperature_digit_1, true);
-            display.set_digit(2, temperature_digit_2, false);
-        } else {
-            let temperature_digit_0 = b'0' + u8::try_from(temperature_tenth_celsius / 100).unwrap();
-            let temperature_digit_1 = b'0' + u8::try_from((temperature_tenth_celsius / 10) % 10).unwrap();
-            let temperature_digit_2 = b'0' + u8::try_from(temperature_tenth_celsius % 10).unwrap();
-            display.set_digit(0, temperature_digit_0, false);
-            display.set_digit(1, temperature_digit_1, true);
-            display.set_digit(2, temperature_digit_2, false);
+        set_display_to_temperature_tenth_celsius(temperature_tenth_celsius, display);
+    } else if format == 0xD2_14_41 {
+        // TTTT_TTTT TTHH_HHHH HHII_IIII IIII_IIII IIIA_AXXX XXXX_XXXY YYYY_YYYY YZZZ_ZZZZ ZZZC_0000
+        if data_slice.len() != 9 {
+            // wrong format
+            return;
         }
+
+        let temperature_bits =
+            ((u16::from(data_slice[0]) & 0b1111_1111) << 2)
+            | ((u16::from(data_slice[1]) & 0b1100_0000) >> 6);
+
+        // 10 bits of temperature mapping [0; 1000] to [-40 °C; +60 °C]
+        // pretty easy to derive tenths of degrees
+        let temperature_tenth_celsius = i32::from(temperature_bits) - 400;
+        set_display_to_temperature_tenth_celsius(temperature_tenth_celsius, display);
     } else {
         // don't know how to decode this format
+    }
+}
+
+fn set_display_to_temperature_tenth_celsius(
+    temperature_tenth_celsius: i32,
+    display: &mut TempDisplayState,
+) {
+    if temperature_tenth_celsius <= -10 {
+        // -TT
+        let abs_temp = (-temperature_tenth_celsius) / 10;
+        let temperature_digit_0 = b'-';
+        let temperature_digit_1 = b'0' + u8::try_from(abs_temp / 10).unwrap();
+        let temperature_digit_2 = b'0' + u8::try_from(abs_temp % 10).unwrap();
+        display.set_digit(0, temperature_digit_0, false);
+        display.set_digit(1, temperature_digit_1, false);
+        display.set_digit(2, temperature_digit_2, false);
+    } else if temperature_tenth_celsius < 0 {
+        // -T.T
+        let abs_temp = -temperature_tenth_celsius;
+        let temperature_digit_0 = b'-';
+        let temperature_digit_1 = b'0' + u8::try_from(abs_temp / 10).unwrap();
+        let temperature_digit_2 = b'0' + u8::try_from(abs_temp % 10).unwrap();
+        display.set_digit(0, temperature_digit_0, false);
+        display.set_digit(1, temperature_digit_1, true);
+        display.set_digit(2, temperature_digit_2, false);
+    } else if temperature_tenth_celsius < 100 {
+        let temperature_digit_0 = b' ';
+        let temperature_digit_1 = b'0' + u8::try_from(temperature_tenth_celsius / 10).unwrap();
+        let temperature_digit_2 = b'0' + u8::try_from(temperature_tenth_celsius % 10).unwrap();
+        display.set_digit(0, temperature_digit_0, false);
+        display.set_digit(1, temperature_digit_1, true);
+        display.set_digit(2, temperature_digit_2, false);
+    } else {
+        let temperature_digit_0 = b'0' + u8::try_from(temperature_tenth_celsius / 100).unwrap();
+        let temperature_digit_1 = b'0' + u8::try_from((temperature_tenth_celsius / 10) % 10).unwrap();
+        let temperature_digit_2 = b'0' + u8::try_from(temperature_tenth_celsius % 10).unwrap();
+        display.set_digit(0, temperature_digit_0, false);
+        display.set_digit(1, temperature_digit_1, true);
+        display.set_digit(2, temperature_digit_2, false);
     }
 }
 
