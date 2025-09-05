@@ -249,7 +249,7 @@ fn setup_pins(peripherals: &mut Peripherals) {
         .pupdr14().pull_up() // AS1115 datasheet says: either floating or GND
     );
     peripherals.GPIOD.pupdr().modify(|_, w| w
-        .pupdr15().floating() // not used
+        .pupdr13().floating() // not used
     );
 
     // set port modes (input/output/analog/alternate)
