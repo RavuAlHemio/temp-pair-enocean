@@ -8,16 +8,15 @@ additional bonus, it varies the brightness of the digits according to the ambien
 
 ## Components
 
-| component                 | product number | placement           | usage |
-| ------------------------- | -------------- | ------------------- | ----- |
-| Clicker 4 for STM32F745VG | MIKROE-6331    | base                | the board with the microcontroller |
-| EnOcean 3 Click           | MIKROE-3653    | mikroBUS slot 1     | RF interface to EnOcean sensors |
-| Flash 10 Click            | MIKROE-5289    | mikroBUS slot 2     | storage of EnOcean addresses |
-| I2C SPI Shuttle board     | see Note 1     | mikroBUS slot 3     | isolation of the temperature display |
-| UT-S 7-SEG B 2 Click      | MIKROE-5912    | shuttle on slot 3   | temperature display |
-| Shuttle Click             | MIKROE-2880    | mikroBUS slot 4     | port expander |
-| 8800 Retro Click          | MIKROE-4771    | shuttle 1 on slot 4 | human-machine interface |
-| Ambient 24 Click          | MIKROE-6534    | shuttle 2 on slot 4 | ambient light sensor |
+| component                 | product number | placement               | usage |
+| ------------------------- | -------------- | ----------------------- | ----- |
+| Clicker 4 for STM32F745VG | MIKROE-6331    | base                    | the board with the microcontroller |
+| EnOcean 3 Click           | MIKROE-3653    | mikroBUS slot 1         | RF interface to EnOcean sensors |
+| Flash 10 Click            | MIKROE-5289    | mikroBUS slot 2         | storage of EnOcean addresses |
+| I2C SPI Shuttle board     | see Note 1     | mikroBUS slot 3 stack 1 | isolation of the temperature display |
+| UT-S 7-SEG B 2 Click      | MIKROE-5912    | shuttle on slot 3       | temperature display |
+| Ambient 24 Click          | MIKROE-6534    | mikroBUS slot 3 stack 2 | ambient light sensor |
+| 8800 Retro Click          | MIKROE-4771    | mikroBUS slot 4         | human-machine interface |
 
 Note 1: The TLC5947 on the UT-S 7-SEG B 2 Click doesn't have a chip-select pin, so it cannot coexist
 with other devices on a SPI bus. It has therefore been placed on its own SPI bus controlled via I2C
