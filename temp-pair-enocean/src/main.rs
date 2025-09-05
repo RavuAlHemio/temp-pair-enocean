@@ -1106,7 +1106,7 @@ fn update_displays(
         CHIP_SELECT_PATTERN,
         true,
     );
-    // pull the chip 1 XLAT pin up, then down again
+    // pull the chip 1 XLAT pin up, wait a bit, then pull it down again
     I2c2::write_data(
         &peripherals,
         ADDR_I2C_SPI,
@@ -1120,6 +1120,9 @@ fn update_displays(
             ),
         ],
     );
+    for _ in 0..1024 {
+        cortex_m::asm::nop();
+    }
     I2c2::write_data(
         &peripherals,
         ADDR_I2C_SPI,
@@ -1155,6 +1158,9 @@ fn update_displays(
             ),
         ],
     );
+    for _ in 0..1024 {
+        cortex_m::asm::nop();
+    }
     I2c2::write_data(
         &peripherals,
         ADDR_I2C_EXP,
