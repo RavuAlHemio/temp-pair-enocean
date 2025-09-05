@@ -30,6 +30,7 @@ pub const CLOCK_SPEED_HZ: u32 = 25_000_000;
 
 const ADDR_I2C_SPI: I2cAddress = I2cAddress::new(0b0101000).unwrap();
 const ADDR_I2C_EXP: I2cAddress = I2cAddress::new(0b1110000).unwrap();
+const ADDR_AMB_SEN: I2cAddress = I2cAddress::new(0b0101001).unwrap();
 
 
 #[panic_handler]
@@ -495,6 +496,31 @@ fn main() -> ! {
         ],
     );
 
+    // configure the ambient light sensor
+    I2c2::write_data(
+        &peripherals,
+        ADDR_AMB_SEN,
+        &[
+            0x00, // ALS_CONF_0 (followed by ALS_CONF_1)
+            (
+                (0b0 << 7) // reserved
+                | (0b111 << 4) // 400ms integration time
+                | (0b0 << 3) // continuous measurement
+                | (0b0 << 2) // no measurement trigger
+                | (0b0 << 1) // no interrupt
+                | (0b0 << 0) // turn on the sensor (1/2)
+            ),
+            (
+                (0b0 << 7) // turn on the sensor (2/2)
+                | (0b0 << 6) // use whole photodiode
+                | (0b0 << 5) // reserved
+                | (0b00 << 3) // x1 gain
+                | (0b00 << 1) // no interrupt hysteresis (we're not using the interrupt anyway)
+                | (0b1 << 0) // perform internal calibration
+            ),
+        ],
+    );
+
     // 0x00 is actually the broadcast address, but AMS was kinda stupid
     const ADDR_8800: I2cAddress = I2cAddress::new(0x00).unwrap();
     const REG_8800_SHUTDOWN: u8 = 0x0C;
@@ -659,6 +685,26 @@ fn main() -> ! {
             &mut top_display,
             &mut bottom_display,
         );
+
+        // ambient light logic
+        I2c2::write_data(
+            &peripherals,
+            ADDR_AMB_SEN,
+            &[
+                0x10, // ALS_DATA_L (followed by ALS_DATA_H)
+            ],
+        );
+        let mut light_bytes = [0u8; 2];
+        I2c2::read_data(
+            &peripherals,
+            ADDR_AMB_SEN,
+            &mut light_bytes,
+        );
+        // FIXME: scaling factor? curve?
+        let brightness_u16 = u16::from_le_bytes(light_bytes);
+        let brightness_u12 = Brightness::new(brightness_u16 >> 4).unwrap();
+        top_display.set_brightness(brightness_u12);
+        bottom_display.set_brightness(brightness_u12);
 
         // HMI logic
         if peripherals.GPIOB.idr().read().idr14().is_low() {
