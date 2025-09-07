@@ -9,11 +9,13 @@ mod flash;
 mod i2c;
 mod hmi_display;
 mod spi;
+mod systick;
 mod temp_display;
 mod uart;
 
 
 use core::panic::PanicInfo;
+use core::time::Duration;
 
 use cortex_m_rt::entry;
 use critical_section::Mutex;
@@ -21,7 +23,7 @@ use stm32f7::stm32f745::{Interrupt, interrupt, Peripherals};
 use stm32f7::stm32f745::spi1::cr1::BR;
 use vcell::VolatileCell;
 
-use crate::blinky_led::{BlinkyLed, BlinkyLedA8};
+use crate::blinky_led::{BlinkyLed, BlinkyLedA8, BlinkyLedC8};
 use crate::i2c::{I2c, I2c2, I2cAddress};
 use crate::spi::{Spi, Spi1, SpiMode};
 use crate::temp_display::{Brightness, TempDisplayState};
@@ -36,9 +38,20 @@ const ADDR_I2C_SPI: I2cAddress = I2cAddress::new(0b0101000).unwrap();
 const ADDR_I2C_EXP: I2cAddress = I2cAddress::new(0b1110000).unwrap();
 const ADDR_AMB_SEN: I2cAddress = I2cAddress::new(0b0101001).unwrap();
 
+const REG_8800_LED_ROW_0: u8 = 0x01;
 const REG_8800_KEYA: u8 = 0x1C;
 
-static BUTTONS_PRESSED: Mutex<VolatileCell<u16>> = Mutex::new(VolatileCell::new(0));
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum ButtonStatus {
+    #[default] Idle,
+    ReadRequested,
+    Pressed(u16),
+}
+impl ButtonStatus {
+    pub fn is_read_requested(&self) -> bool { *self == Self::ReadRequested }
+}
+
+static BUTTON_STATUS: Mutex<VolatileCell<ButtonStatus>> = Mutex::new(VolatileCell::new(ButtonStatus::Idle));
 
 
 #[panic_handler]
@@ -57,17 +70,76 @@ fn handle_panic(_info: &PanicInfo) -> ! {
 }
 
 
+/// Sleeps for at least the given duration; may perform a queued task during that time.
+///
+/// Yielding for [`Duration::ZERO`] runs through the background tasks once, then returns.
+fn yield_for(peripherals: &Peripherals, duration: Duration) {
+    let wait_millis: u32 = duration.as_millis().min(u32::MAX.into()).try_into().unwrap();
+    let start_time = crate::systick::get_counter();
+
+    let end_time = start_time.wrapping_add(wait_millis);
+
+    // if we don't need a wraparound, pretend that the clock has already wrapped around
+    let mut wrapped_around = end_time >= start_time;
+
+    let mut prev_loop_time = start_time;
+    loop {
+        // 1. any background tasks to perform?
+        background_task_button_state(peripherals);
+
+        // 2. how are we on time?
+        // detect wraparound
+        let current_time = crate::systick::get_counter();
+        if !wrapped_around {
+            if current_time < prev_loop_time {
+                // wrapped around
+                wrapped_around = true;
+            }
+        }
+
+        // check time
+        if wrapped_around {
+            if current_time >= end_time {
+                // we're done
+                break;
+            }
+        }
+
+        // update this for wraparound detection
+        prev_loop_time = current_time;
+    }
+}
+
+
+/// Yields execution to background tasks while flash chip is busy.
+fn yield_for_flash(peripherals: &Peripherals) {
+    loop {
+        let is_busy = do_with_flash_chip_selected(
+            peripherals,
+            |peri| crate::flash::is_busy(peri)
+        );
+        if !is_busy {
+            break;
+        }
+        yield_for(peripherals, Duration::ZERO);
+    }
+}
+
+
 /// Reconfigures the clocks of the microcontroller.
 ///
 /// By default, the clocks are set up as follows:
 /// ```plain
 /// ╭────────╮ ╒══════╕
-/// │ HSI    ├─┤ HPRE ├───┬─────────┬─────────╴╴╴──┐ AHB (max. 216 MHz)
-/// │ 16 MHz │ │   /1 ├┐  │         ╳              ╳
-/// ╰────────╯ └──────┘│ ┌┴───────┐┌┴───────┐     ┌┴───────┐
-///                    │ │ SYSCLK ││ GPIOA  │ ... │ GPIOE  │
-///                    │ │ 16 MHz ││ 16 MHz │     │ 16 MHz │
-///                    │ └────────┘└────────┘     └────────┘
+/// │ HSI    ├─┤ HPRE ├───┬─────────┬─────────╴╴╴──┬─────────┐ AHB (max. 216 MHz)
+/// │ 16 MHz │ │   /1 ├┐  │         ╳              ╳         │
+/// ╰────────╯ └──────┘│ ┌┴───────┐┌┴───────┐     ┌┴───────┐┌┴──────────┐
+///                    │ │ SYSCLK ││ GPIOA  │ ... │ GPIOE  ││ fixed /8  │
+///                    │ │ 16 MHz ││ 16 MHz │     │ 16 MHz ││ prescaler │
+///                    │ └────────┘└────────┘     └────────┘╞ ═  ═  ═  ═╡
+///                    │                                    │ SysTick   │
+///                    │                                    │ 2 MHz     │
+///                    │                                    └───────────┘
 ///                    │╒═══════╕
 ///                    ├┤ PPRE1 ├──┬─────────┬─────────┐ APB1 (max. 54 MHz)
 ///                    ││    /1 │  ╳         ╳         ╳
@@ -121,12 +193,15 @@ fn handle_panic(_info: &PanicInfo) -> ! {
 ///
 /// ```plain
 /// ╭────────╮ ╒══════╕
-/// │ HSE    ├─┤ HPRE ├───┬─────────┬─────────╴╴╴──┐ AHB (max. 216 MHz)
-/// │ 25 MHz │ │   /1 ├┐  │         │              │
-/// ╰────────╯ └──────┘│ ┌┴───────┐┌┴───────┐     ┌┴───────┐
-///                    │ │ SYSCLK ││ GPIOA  │ ... │ GPIOE  │
-///                    │ │ 25 MHz ││ 25 MHz │     │ 25 MHz │
-///                    │ └────────┘└────────┘     └────────┘
+/// │ HSE    ├─┤ HPRE ├───┬─────────┬─────────╴╴╴──┬─────────┐ AHB (max. 216 MHz)
+/// │ 25 MHz │ │   /1 ├┐  │         │              │         │
+/// ╰────────╯ └──────┘│ ┌┴───────┐┌┴───────┐     ┌┴───────┐┌┴──────────┐
+///                    │ │ SYSCLK ││ GPIOA  │ ... │ GPIOE  ││ fixed /8  │
+///                    │ │ 25 MHz ││ 25 MHz │     │ 25 MHz ││ prescaler │
+///                    │ └────────┘└────────┘     └────────┘╞ ═  ═  ═  ═╡
+///                    │                                    │ SysTick   │
+///                    │                                    │ 3.125 MHz │
+///                    │                                    └───────────┘
 ///                    │╒═══════╕ 
 ///                    ├┤ PPRE1 ├──┬─────────┬─────────┐ APB1 (max. 54 MHz)
 ///                    ││    /1 │  │         │         │
@@ -202,6 +277,7 @@ fn setup_clocks(peripherals: &mut Peripherals) {
     );
     peripherals.RCC.apb2enr().modify(|_, w| w
         .spi1en().enabled()
+        .syscfgen().enabled()
     );
 }
 
@@ -342,9 +418,11 @@ impl AppState {
 #[entry]
 fn main() -> ! {
     let mut peripherals = unsafe { Peripherals::steal() };
+    let mut core_peripherals = unsafe { cortex_m::Peripherals::steal() };
 
     setup_clocks(&mut peripherals);
     setup_pins(&mut peripherals);
+    crate::systick::set_up(&mut core_peripherals);
 
     // set up peripherals:
     // * I2C2 (buttons & LEDs, light sensor, 7seg via I2C-SPI bridge)
@@ -389,6 +467,8 @@ fn main() -> ! {
     // LED blinky
     BlinkyLedA8::set_up(&peripherals);
     BlinkyLedA8::turn_on(&peripherals);
+    BlinkyLedC8::set_up(&peripherals);
+    BlinkyLedC8::turn_on(&peripherals);
 
     // reset the I2C-SPI bridge for the 7-seg displays
     peripherals.GPIOD.odr().modify(|_, w| w
@@ -516,10 +596,10 @@ fn main() -> ! {
                 | (0b0 << 3) // continuous measurement
                 | (0b0 << 2) // no measurement trigger
                 | (0b0 << 1) // no interrupt
-                | (0b0 << 0) // turn on the sensor (1/2)
+                | (0b1 << 0) // turn on the sensor (1/2)
             ),
             (
-                (0b0 << 7) // turn on the sensor (2/2)
+                (0b1 << 7) // turn on the sensor (2/2)
                 | (0b0 << 6) // use whole photodiode
                 | (0b0 << 5) // reserved
                 | (0b00 << 3) // x1 gain
@@ -533,7 +613,6 @@ fn main() -> ! {
     const VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS: u8 = 0x01;
     const REG_8800_SCANLIMIT: u8 = 0x0B;
     const VALUE_8800_SCANLIMIT_ALL_DIGITS: u8 = 0b111;
-    const REG_8800_LED_ROW_0: u8 = 0x01;
 
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SHUTDOWN, VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS]);
     I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SCANLIMIT, VALUE_8800_SCANLIMIT_ALL_DIGITS]);
@@ -620,7 +699,6 @@ fn main() -> ! {
     do_with_flash_chip_selected(&peripherals, |p|
         crate::flash::read(p, crate::flash::Address::new(0).unwrap(), &mut address_buffer)
     );
-    /*
     // visualize what is programmed into Flash
     I2c2::write_data(
         &peripherals, ADDR_8800,
@@ -630,7 +708,6 @@ fn main() -> ! {
             address_buffer[4], address_buffer[5], address_buffer[6], address_buffer[7],
         ],
     );
-    */
 
     let mut outside_address =
         u32::from(address_buffer[0]) << 24
@@ -684,7 +761,10 @@ fn main() -> ! {
         .tr14().enabled() // trigger on falling signal
     );
     peripherals.EXTI.imr().modify(|_, w| w
-        .mr14().unmasked()
+        .mr14().unmasked() // turn it on
+    );
+    peripherals.EXTI.pr().write(|w| w
+        .pr14().clear_bit_by_one() // clear any pending interrupt
     );
     // link external interrupt 14 with GPIOB
     // TODO: port to safe code once fields are merged: https://github.com/stm32-rs/stm32-rs/pull/1265
@@ -693,8 +773,24 @@ fn main() -> ! {
     });
     // unmask interrupt
     unsafe {
+        core_peripherals.NVIC.set_priority(Interrupt::EXTI15_10, 0);
         cortex_m::peripheral::NVIC::unmask(Interrupt::EXTI15_10);
     }
+
+    // clear out the button state
+    let mut button_buf = [0u8; 2];
+    I2c2::write_data(
+        &peripherals, ADDR_8800,
+        &[
+            REG_8800_KEYA,
+        ],
+    );
+    I2c2::read_data(
+        &peripherals, ADDR_8800,
+        &mut button_buf,
+    );
+
+    // from here on, we should yield instead of busywaiting
 
     BlinkyLedA8::turn_off(&peripherals);
 
@@ -710,6 +806,9 @@ fn main() -> ! {
             &mut top_display,
             &mut bottom_display,
         );
+
+        // process background tasks
+        yield_for(&peripherals, Duration::ZERO);
 
         // ambient light logic
         I2c2::write_data(
@@ -727,16 +826,27 @@ fn main() -> ! {
         );
         // FIXME: scaling factor? curve?
         let brightness_u16 = u16::from_le_bytes(light_bytes);
-        let brightness_u12 = Brightness::new(brightness_u16 >> 4).unwrap();
+        let mut brightness_u12 = Brightness::new(brightness_u16 >> 4).unwrap();
+        if brightness_u12.as_u16() == 0 {
+            brightness_u12 = Brightness::new(1).unwrap();
+        }
         top_display.set_brightness(brightness_u12);
         bottom_display.set_brightness(brightness_u12);
 
+        // process background tasks
+        yield_for(&peripherals, Duration::ZERO);
+
         // HMI logic
         let all_key_values = critical_section::with(|cs| {
-            let guard = BUTTONS_PRESSED.borrow(cs);
-            let value = guard.get();
-            guard.set(0);
-            value
+            let guard = BUTTON_STATUS.borrow(cs);
+            match guard.get() {
+                ButtonStatus::Idle => 0,
+                ButtonStatus::ReadRequested => 0,
+                ButtonStatus::Pressed(pressed) => {
+                    guard.set(ButtonStatus::Idle);
+                    pressed
+                },
+            }
         });
         if all_key_values != 0 {
             // popcount
@@ -834,9 +944,7 @@ fn main() -> ! {
                             crate::flash::start_erase_4_kibibytes(p, crate::flash::Address::new(0).unwrap())
                         );
                         // wait until erasing is done
-                        do_with_flash_chip_selected(&peripherals, |p|
-                            crate::flash::wait_while_busy(p)
-                        );
+                        yield_for_flash(&peripherals);
                         // enable writing again
                         do_with_flash_chip_selected(&peripherals, |p|
                             crate::flash::enable_writing(p)
@@ -863,9 +971,7 @@ fn main() -> ! {
                             crate::flash::write(p, crate::flash::Address::new(0).unwrap(), &writing_buffer)
                         );
                         // wait until writing is done
-                        do_with_flash_chip_selected(&peripherals, |p|
-                            crate::flash::wait_while_busy(p)
-                        );
+                        yield_for_flash(&peripherals);
 
                         // pull ~{write-prot} low
                         peripherals.GPIOD.odr().modify(|_, w| w
@@ -902,13 +1008,19 @@ fn main() -> ! {
                 }
             }
 
-            // finally, update the displays if something changed
+            // process background tasks
+            yield_for(&peripherals, Duration::ZERO);
+
+            // update the displays if something changed
             update_displays(
                 &peripherals,
                 &mut top_display,
                 &mut bottom_display,
                 false,
             );
+
+            // process any outstanding background tasks
+            yield_for(&peripherals, Duration::ZERO);
         }
     }
 }
@@ -1091,6 +1203,27 @@ fn decode_temperature(
         display.set_digit(0, temperature_digit_0, false);
         display.set_digit(1, temperature_digit_1, true);
         display.set_digit(2, temperature_digit_2, false);
+    } else if format == 0xA5_04_01 {
+        // 0000_0000 HHHH_HHHH TTTT_TTTT 0000_L0T0
+        let data = match data_slice.try_into() {
+            Ok(ds) => u32::from_be_bytes(ds),
+            Err(_) => {
+                // wrong format
+                return;
+            },
+        };
+
+        if data & 0b1000 == 0 {
+            // this is a teach-in packet, ignore it
+            return;
+        }
+
+        // 8 bits of temperature 0..=250 from 0 to +40 °C
+        // steps of 0.16 °C; let's aim for one decimal digit
+        let temperature_bits = (data >> 8) & 0xFF;
+        let temperature_hundredth_celsius = temperature_bits * 16 / 100;
+        let temperature_tenth_celsius = i32::try_from(temperature_hundredth_celsius / 10).unwrap();
+        set_display_to_temperature_tenth_celsius(temperature_tenth_celsius, display);
     } else if format == 0xA5_04_03 {
         // HHHH_HHHH 0000_00TT TTTT_TTTT 0000_L00x
         let data = match data_slice.try_into() {
@@ -1262,32 +1395,45 @@ fn update_displays(
     }
 }
 
+fn background_task_button_state(peripherals: &Peripherals) {
+    let button_status = critical_section::with(|cs| {
+        BUTTON_STATUS.borrow(cs).get()
+    });
+    if !button_status.is_read_requested() {
+        return;
+    }
+
+    I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_KEYA]);
+    let mut key_values = [0u8; 2];
+    I2c2::read_data(&peripherals, ADDR_8800, &mut key_values);
+
+    // by default: 0 pressed, 1 not pressed; invert that
+    let negated_all_key_values =
+        u16::from(key_values[0]) << 8
+        | u16::from(key_values[1]);
+    let all_key_values = !negated_all_key_values;
+
+    // store
+    critical_section::with(|cs| {
+        BUTTON_STATUS
+            .borrow(cs)
+            .set(ButtonStatus::Pressed(all_key_values));
+    });
+}
+
 #[interrupt]
 fn EXTI15_10() {
     let peripherals = unsafe { Peripherals::steal() };
-
     if peripherals.EXTI.pr().read().pr14().is_pending() {
         // 8800 wants us to read the buttons
 
         // clear the pending bit
-        peripherals.EXTI.pr().modify(|_, w| w.pr14().clear_bit_by_one());
+        peripherals.EXTI.pr().write(|w| w.pr14().clear_bit_by_one());
 
-        // ask for the buttons
-        I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_KEYA]);
-        let mut key_values = [0u8; 2];
-        I2c2::read_data(&peripherals, ADDR_8800, &mut key_values);
-
-        // by default: 0 pressed, 1 not pressed; invert that
-        let negated_all_key_values =
-            u16::from(key_values[0]) << 8
-            | u16::from(key_values[1]);
-        let all_key_values = !negated_all_key_values;
-
-        // store
+        // mark for next yield
         critical_section::with(|cs| {
-            BUTTONS_PRESSED
-                .borrow(cs)
-                .set(all_key_values);
+            BUTTON_STATUS.borrow(cs)
+                .set(ButtonStatus::ReadRequested);
         });
     }
 }

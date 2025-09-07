@@ -1,3 +1,6 @@
+//! Code for interfacing with the Renesas AT25FF321A flash chip via SPI.
+
+
 use stm32f7::stm32f745::Peripherals;
 
 use crate::spi::{Spi, Spi1};
@@ -96,6 +99,13 @@ pub fn wait_while_busy(peripherals: &Peripherals) {
             break;
         }
     }
+}
+
+pub fn is_busy(peripherals: &Peripherals) -> bool {
+    // send "read status register 1" to the flash chip
+    let mut buf = [CMD_READ_STATUS_REGISTER_1, 0x00];
+    FlashSpi::communicate_bytes(peripherals, &mut buf);
+    (buf[1] & (1 << 0)) != 0
 }
 
 /// Writes the given block of bytes. The bytes must have previously been erased.

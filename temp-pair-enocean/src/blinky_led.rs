@@ -72,3 +72,4 @@ pub trait BlinkyLed {
 
 
 make_blinky_led!(BlinkyLedA8, A, 8);
+make_blinky_led!(BlinkyLedC8, C, 8);
