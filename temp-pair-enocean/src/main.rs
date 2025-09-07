@@ -1007,21 +1007,21 @@ fn main() -> ! {
                     },
                 }
             }
-
-            // process background tasks
-            yield_for(&peripherals, Duration::ZERO);
-
-            // update the displays if something changed
-            update_displays(
-                &peripherals,
-                &mut top_display,
-                &mut bottom_display,
-                false,
-            );
-
-            // process any outstanding background tasks
-            yield_for(&peripherals, Duration::ZERO);
         }
+
+        // process background tasks
+        yield_for(&peripherals, Duration::ZERO);
+
+        // update the displays if something changed
+        update_displays(
+            &peripherals,
+            &mut top_display,
+            &mut bottom_display,
+            false,
+        );
+
+        // process any outstanding background tasks
+        yield_for(&peripherals, Duration::ZERO);
     }
 }
 
