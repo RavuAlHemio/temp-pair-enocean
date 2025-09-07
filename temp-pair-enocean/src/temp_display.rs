@@ -111,6 +111,33 @@ impl TempDisplayState {
         }
     }
 
+    /// Writes out which segments are lit.
+    ///
+    /// Does not modify the dirty flag.
+    pub fn write_lit_segments(&self, segments: &mut [u8]) {
+        assert_eq!(segments.len(), 3);
+
+        const ELEMENTS: [SegmentCombo; 8] = [
+            SegmentCombo::DECIMAL_POINT,
+            SegmentCombo::MIDDLE,
+            SegmentCombo::TOP_LEFT,
+            SegmentCombo::BOTTOM_LEFT,
+            SegmentCombo::BOTTOM,
+            SegmentCombo::BOTTOM_RIGHT,
+            SegmentCombo::TOP_RIGHT,
+            SegmentCombo::TOP,
+        ];
+
+        for (i, digit_lit_segments) in self.lit_segments.iter().copied().enumerate() {
+            segments[i] = 0;
+            for (j, segment) in ELEMENTS.into_iter().enumerate() {
+                if digit_lit_segments.contains(segment) {
+                    segments[i] |= 1 << j;
+                }
+            }
+        }
+    }
+
     fn write_spi_bytes(&self, spi_bytes: &mut [u8]) {
         assert_eq!(spi_bytes.len(), 36);
 
