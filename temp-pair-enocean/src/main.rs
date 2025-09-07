@@ -1289,7 +1289,7 @@ fn set_display_to_temperature_tenth_celsius(
         display.set_digit(1, temperature_digit_1, true);
         display.set_digit(2, temperature_digit_2, false);
     } else if temperature_tenth_celsius < 100 {
-// 0.0 °C <= t < 10.0 °C
+        // 0.0 °C <= t < 10.0 °C
         // show as T.T
         let temperature_digit_0 = b' ';
         let temperature_digit_1 = b'0' + u8::try_from(temperature_tenth_celsius / 10).unwrap();
@@ -1298,7 +1298,7 @@ fn set_display_to_temperature_tenth_celsius(
         display.set_digit(1, temperature_digit_1, true);
         display.set_digit(2, temperature_digit_2, false);
     } else {
-// t >= 10.0 °C
+        // t >= 10.0 °C
         // show as TT.T
         let temperature_digit_0 = b'0' + u8::try_from(temperature_tenth_celsius / 100).unwrap();
         let temperature_digit_1 = b'0' + u8::try_from((temperature_tenth_celsius / 10) % 10).unwrap();
