@@ -1,39 +1,39 @@
 use stm32f7::stm32f745::Peripherals;
 
 
-macro_rules! make_blinky_led {
+macro_rules! make_gpio_output {
     (
         $name:ident,
         $pin_bank:ident,
         $pin:expr $(,)?
     ) => {
         pub struct $name;
-        impl BlinkyLed for $name {
+        impl GpioOutput for $name {
             fn set_up(peripherals: &Peripherals) {
                 // clock to GPIO peripheral
                 peripherals.RCC.ahb1enr().modify(|_, w|
-                    make_blinky_led!(@clock_field, $pin_bank, w).enabled()
+                    make_gpio_output!(@clock_field, $pin_bank, w).enabled()
                 );
 
                 // pin to output
-                make_blinky_led!(@gpio_peripheral, $pin_bank, peripherals).moder().modify(|_, w| w
+                make_gpio_output!(@gpio_peripheral, $pin_bank, peripherals).moder().modify(|_, w| w
                     .moder($pin).output()
                 );
 
                 // output to push-pull
-                make_blinky_led!(@gpio_peripheral, $pin_bank, peripherals).otyper().modify(|_, w| w
+                make_gpio_output!(@gpio_peripheral, $pin_bank, peripherals).otyper().modify(|_, w| w
                     .ot($pin).push_pull()
                 );
             }
 
             fn turn_on(peripherals: &Peripherals) {
-                make_blinky_led!(@gpio_peripheral, $pin_bank, peripherals).odr().modify(|_, w| w
+                make_gpio_output!(@gpio_peripheral, $pin_bank, peripherals).odr().modify(|_, w| w
                     .odr($pin).high()
                 );
             }
 
             fn turn_off(peripherals: &Peripherals) {
-                make_blinky_led!(@gpio_peripheral, $pin_bank, peripherals).odr().modify(|_, w| w
+                make_gpio_output!(@gpio_peripheral, $pin_bank, peripherals).odr().modify(|_, w| w
                     .odr($pin).low()
                 );
             }
@@ -64,12 +64,20 @@ macro_rules! make_blinky_led {
 }
 
 
-pub trait BlinkyLed {
+pub trait GpioOutput {
     fn set_up(peripherals: &Peripherals);
     fn turn_on(peripherals: &Peripherals);
     fn turn_off(peripherals: &Peripherals);
+
+    fn set_high(peripherals: &Peripherals) { Self::turn_on(peripherals) }
+    fn set_low(peripherals: &Peripherals) { Self::turn_off(peripherals) }
 }
 
 
-make_blinky_led!(BlinkyLedA8, A, 8);
-make_blinky_led!(BlinkyLedC8, C, 8);
+make_gpio_output!(BlinkyLedA8, A, 8);
+make_gpio_output!(BlinkyLedC8, C, 8);
+make_gpio_output!(TempDisplayBridgeNotReset, D, 11);
+make_gpio_output!(FlashNotChipSelect, E, 8);
+make_gpio_output!(FlashNotHoldOrNotReset, E, 7);
+make_gpio_output!(FlashWriteProtect, D, 12);
+make_gpio_output!(EnOceanNotReset, C, 15);

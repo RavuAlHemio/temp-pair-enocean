@@ -114,6 +114,7 @@ impl TempDisplayState {
     /// Writes out which segments are lit.
     ///
     /// Does not modify the dirty flag.
+    #[allow(unused)]
     pub fn write_lit_segments(&self, segments: &mut [u8]) {
         assert_eq!(segments.len(), 3);
 
@@ -237,6 +238,7 @@ impl TempDisplayState {
         self.set_digit(position, ascii_digit, decimal_point);
     }
 
+    #[allow(unused)]
     pub fn send_via_spi(&mut self, peripherals: &Peripherals) {
         let mut spi_bytes = [0u8; 36];
         self.write_spi_bytes(&mut spi_bytes);
@@ -249,18 +251,13 @@ impl TempDisplayState {
     pub fn send_via_i2c_spi_bridge<I: I2c>(
         &mut self,
         peripherals: &Peripherals,
-        bridge_address: I2cAddress,
-        chip_select_pattern: u8,
+        displays: &I2cSpiBridgedTempDisplays,
         wait: bool,
     ) {
-        if chip_select_pattern < 0b001 || chip_select_pattern > 0b111 {
-            panic!("invalid chip select pattern");
-        }
-
         let mut i2c_bytes = [0u8; 37];
-        i2c_bytes[0] = chip_select_pattern;
+        i2c_bytes[0] = displays.chip_select_pattern;
         self.write_spi_bytes(&mut i2c_bytes[1..37]);
-        I::write_data(peripherals, bridge_address, &i2c_bytes);
+        displays.send_spi_data::<I>(peripherals, &i2c_bytes);
 
         // the display contents now match our stored data
         self.dirty = false;
@@ -272,5 +269,164 @@ impl TempDisplayState {
                 cortex_m::asm::nop();
             }
         }
+    }
+}
+
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct I2cSpiBridgedTempDisplays {
+    pub i2c_spi_bridge_address: I2cAddress,
+    pub i2c_extender_address: I2cAddress,
+    pub chip_select_pattern: u8,
+}
+impl I2cSpiBridgedTempDisplays {
+    pub fn set_up<I: I2c>(&self, peripherals: &Peripherals) {
+        // configure the I2C-SPI bridge
+        I::write_data(
+            &peripherals,
+            self.i2c_spi_bridge_address,
+            &[
+                0xF0, // configure SPI interface
+                (
+                    (0b00 << 6) // reserved bits
+                    | (0b0 << 5) // MSB first
+                    | (0b0 << 4) // reserved bit
+                    | (0b00 << 2) // SPI mode 0
+                    | (0b00 << 0) // 1875 kHz
+                ),
+            ],
+        );
+        I::write_data(
+            &peripherals,
+            self.i2c_spi_bridge_address,
+            &[
+                0xF6, // GPIO enable
+                (
+                    (0b00000 << 3) // reserved bits
+                    | (0b1 << 2) // CS2 is GPIO
+                    | (0b1 << 1) // CS1 is GPIO
+                    | (0b1 << 0) // CS0 is GPIO
+                ),
+            ],
+        );
+        I::write_data(
+            &peripherals,
+            self.i2c_spi_bridge_address,
+            &[
+                0xF7, // GPIO mode
+                (
+                    (0b00 << 6) // reserved bits
+                    | (0b00 << 4) // CS2 is a floating input
+                    | (0b00 << 2) // CS1 is a floating input
+                    | (0b01 << 0) // CS0 is a push-pull output ("latch" command to chip 1)
+                ),
+            ],
+        );
+        I::write_data(
+            &peripherals,
+            self.i2c_spi_bridge_address,
+            &[
+                0xF4, // GPIO write
+                (
+                    (0b00000 << 3) // reserved bits
+                    | (0b0 << 2) // CS2 is an input anyway
+                    | (0b0 << 1) // CS1 is an input anyway
+                    | (0b0 << 0) // set CS0 low (no latching on chip 1)
+                ),
+            ],
+        );
+
+        // configure the I2C port expander
+        I::write_data(
+            &peripherals,
+            self.i2c_extender_address,
+            &[
+                0x02, // polarity inversion
+                0b0000_0000, // invert polarity of no ports
+            ],
+        );
+        I::write_data(
+            &peripherals,
+            self.i2c_extender_address,
+            &[
+                0x03, // I/O direction
+                (
+                    (0b1111 << 4) // IO4 through IO7 are unused, set them as inputs
+                    | (0b1 << 3) // IO3 is an input (~{INT}, unused)
+                    | (0b0 << 2) // IO2 is an output (PWM, "blank" to both chips)
+                    | (0b0 << 1) // IO1 is an output (AN, "latch" command to chip 2)
+                    | (0b0 << 0) // IO0 is an output (~{RST}, used for ClickID)
+                ),
+            ],
+        );
+        I::write_data(
+            &peripherals,
+            self.i2c_extender_address,
+            &[
+                0x01, // GPIO output
+                (
+                    (0b00000 << 3) // IO3 through IO7 are inputs
+                    | (0b0 << 2) // request that displays not be shut off
+                    | (0b0 << 1) // no latch to chip 2
+                    | (0b1 << 0) // ~{RST} up so that ClickID does not interfere
+                ),
+            ],
+        );
+        I::write_data(
+            &peripherals,
+            self.i2c_extender_address,
+            &[
+                0x4F, // output behavior configuration
+                0, // push-pull
+            ],
+        );
+    }
+
+    pub fn send_spi_data<I: I2c>(&self, peripherals: &Peripherals, chip_select_pattern_and_data: &[u8]) {
+        assert!(
+            chip_select_pattern_and_data.len() > 1,
+            "need at least a chip select pattern and one byte",
+        );
+        assert!(
+            chip_select_pattern_and_data[0] >= 0b001 && chip_select_pattern_and_data[0] <= 0b111,
+            "chip select pattern must be at least 0b001 and at most 0b111",
+        );
+
+        I::write_data(peripherals, self.i2c_spi_bridge_address, chip_select_pattern_and_data);
+    }
+
+    pub fn set_chip_1_xlat<I: I2c>(&self, peripherals: &Peripherals, up: bool) {
+        let pin: u8 = if up { 1 } else { 0 };
+        I::write_data(
+            peripherals,
+            self.i2c_spi_bridge_address, // the mikroBUS ~{CS} pin is on the SPI bridge
+            &[
+                0xF4, // GPIO output
+                (
+                    (0b00000 << 3) // reserved pins
+                    | (0b0 << 2) // CS2 is an input anyway
+                    | (0b0 << 1) // CS1 is an input anyway
+                    | (pin << 0) // pull CS0 wherever we need it
+                )
+            ]
+        );
+    }
+
+    pub fn set_chip_2_xlat<I: I2c>(&self, peripherals: &Peripherals, up: bool) {
+        let pin: u8 = if up { 1 } else { 0 };
+        I::write_data(
+            peripherals,
+            self.i2c_extender_address, // the mikroBUS AN pin is on the GPIO extender
+            &[
+                0x01, // GPIO output
+                (
+                    (0b0000 << 4) // IO4-IO7 unused and configured as inputs
+                    | (0b0 << 3) // IO3 is an input
+                    | (0b0 << 2) // IO2 is "blank" and should be off
+                    | (pin << 1) // IO1 is "latch" for chip 2, this is the important one
+                    | (0b1 << 0) // IO0 is ~{ClickID} so keep it high
+                )
+            ]
+        );
     }
 }

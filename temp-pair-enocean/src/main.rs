@@ -2,10 +2,10 @@
 #![no_std]
 
 
-mod blinky_led;
 mod crc8;
 mod enocean;
 mod flash;
+mod gpio_output;
 mod i2c;
 mod hmi_display;
 mod spi;
@@ -23,23 +23,35 @@ use stm32f7::stm32f745::{Interrupt, interrupt, Peripherals};
 use stm32f7::stm32f745::spi1::cr1::BR;
 use vcell::VolatileCell;
 
-use crate::blinky_led::{BlinkyLed, BlinkyLedA8, BlinkyLedC8};
+use crate::gpio_output::{
+    BlinkyLedA8, BlinkyLedC8, EnOceanNotReset, FlashNotChipSelect, FlashNotHoldOrNotReset, FlashWriteProtect, GpioOutput, TempDisplayBridgeNotReset
+};
+use crate::hmi_display::HmiDisplay;
 use crate::i2c::{I2c, I2c2, I2cAddress};
 use crate::spi::{Spi, Spi1, SpiMode};
-use crate::temp_display::{Brightness, TempDisplayState};
+use crate::temp_display::{Brightness, I2cSpiBridgedTempDisplays, TempDisplayState};
 use crate::uart::{Uart, Usart2, Usart3};
 
 
 pub const CLOCK_SPEED_HZ: u32 = 25_000_000;
 
-// 0x00 is actually the broadcast address, but AMS was kinda stupid
-const ADDR_8800: I2cAddress = I2cAddress::new(0x00).unwrap();
-const ADDR_I2C_SPI: I2cAddress = I2cAddress::new(0b0101000).unwrap();
-const ADDR_I2C_EXP: I2cAddress = I2cAddress::new(0b1110000).unwrap();
 const ADDR_AMB_SEN: I2cAddress = I2cAddress::new(0b0101001).unwrap();
 
-const REG_8800_LED_ROW_0: u8 = 0x01;
-const REG_8800_KEYA: u8 = 0x1C;
+const HMI_DISPLAY: HmiDisplay = HmiDisplay {
+    // Retro 8800 Click board
+    // 0x00 is actually the broadcast address, but AMS was kinda stupid
+    i2c_address: I2cAddress::new(0x00).unwrap(),
+};
+const TEMP_DISPLAYS: I2cSpiBridgedTempDisplays = I2cSpiBridgedTempDisplays {
+    // I2C-SPI mikroBUS board
+    i2c_spi_bridge_address: I2cAddress::new(0b0101000).unwrap(),
+    i2c_extender_address: I2cAddress::new(0b1110000).unwrap(),
+
+    // all CS pins on the I2C-SPI bridge are set to GPIO
+    // but according to the datasheet we can't pass 0, so pass 1
+    chip_select_pattern: 0b001,
+};
+
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum ButtonStatus {
@@ -470,119 +482,18 @@ fn main() -> ! {
     BlinkyLedC8::set_up(&peripherals);
     BlinkyLedC8::turn_on(&peripherals);
 
-    // reset the I2C-SPI bridge for the 7-seg displays
-    peripherals.GPIOD.odr().modify(|_, w| w
-        .odr11().low()
-    );
+    // reset the I2C-SPI bridge and expander for the 7-seg displays
+    TempDisplayBridgeNotReset::set_low(&peripherals);
     for _ in 0..1024 {
         cortex_m::asm::nop();
     }
-    peripherals.GPIOD.odr().modify(|_, w| w
-        .odr11().high()
-    );
+    TempDisplayBridgeNotReset::set_high(&peripherals);
     for _ in 0..1024 {
         cortex_m::asm::nop();
     }
 
-    // configure the I2C-SPI bridge
-    I2c2::write_data(
-        &peripherals,
-        ADDR_I2C_SPI,
-        &[
-            0xF0, // configure SPI interface
-            (
-                (0b00 << 6) // reserved bits
-                | (0b0 << 5) // MSB first
-                | (0b0 << 4) // reserved bit
-                | (0b00 << 2) // SPI mode 0
-                | (0b00 << 0) // 1875 kHz
-            ),
-        ],
-    );
-    I2c2::write_data(
-        &peripherals,
-        ADDR_I2C_SPI,
-        &[
-            0xF6, // GPIO enable
-            (
-                (0b00000 << 3) // reserved bits
-                | (0b1 << 2) // CS2 is GPIO
-                | (0b1 << 1) // CS1 is GPIO
-                | (0b1 << 0) // CS0 is GPIO
-            ),
-        ],
-    );
-    I2c2::write_data(
-        &peripherals,
-        ADDR_I2C_SPI,
-        &[
-            0xF7, // GPIO mode
-            (
-                (0b00 << 6) // reserved bits
-                | (0b00 << 4) // CS2 is a floating input
-                | (0b00 << 2) // CS1 is a floating input
-                | (0b01 << 0) // CS0 is a push-pull output ("latch" command to chip 1)
-            ),
-        ],
-    );
-    I2c2::write_data(
-        &peripherals,
-        ADDR_I2C_SPI,
-        &[
-            0xF4, // GPIO write
-            (
-                (0b00000 << 3) // reserved bits
-                | (0b0 << 2) // CS2 is an input anyway
-                | (0b0 << 1) // CS1 is an input anyway
-                | (0b0 << 0) // set CS0 low (no latching on chip 1)
-            ),
-        ],
-    );
-
-    // configure the I2C port expander
-    I2c2::write_data(
-        &peripherals,
-        ADDR_I2C_EXP,
-        &[
-            0x02, // polarity inversion
-            0b0000_0000, // invert polarity of no ports
-        ],
-    );
-    I2c2::write_data(
-        &peripherals,
-        ADDR_I2C_EXP,
-        &[
-            0x03, // I/O direction
-            (
-                (0b1111 << 4) // IO4 through IO7 are unused, set them as inputs
-                | (0b1 << 3) // IO3 is an input (~{INT}, unused)
-                | (0b0 << 2) // IO2 is an output (PWM, "blank" to both chips)
-                | (0b0 << 1) // IO1 is an output (AN, "latch" command to chip 2)
-                | (0b0 << 0) // IO0 is an output (~{RST}, used for ClickID)
-            ),
-        ],
-    );
-    I2c2::write_data(
-        &peripherals,
-        ADDR_I2C_EXP,
-        &[
-            0x01, // GPIO output
-            (
-                (0b00000 << 3) // IO3 through IO7 are inputs
-                | (0b0 << 2) // request that displays not be shut off
-                | (0b0 << 1) // no latch to chip 2
-                | (0b1 << 0) // ~{RST} up so that ClickID does not interfere
-            ),
-        ],
-    );
-    I2c2::write_data(
-        &peripherals,
-        ADDR_I2C_EXP,
-        &[
-            0x4F, // output behavior configuration
-            0, // push-pull
-        ],
-    );
+    // set up the I2C-SPI bridge and expander for the 7-seg displays
+    TEMP_DISPLAYS.set_up::<I2c2>(&peripherals);
 
     // configure the ambient light sensor
     I2c2::write_data(
@@ -609,14 +520,8 @@ fn main() -> ! {
         ],
     );
 
-    const REG_8800_SHUTDOWN: u8 = 0x0C;
-    const VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS: u8 = 0x01;
-    const REG_8800_SCANLIMIT: u8 = 0x0B;
-    const VALUE_8800_SCANLIMIT_ALL_DIGITS: u8 = 0b111;
-
-    I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SHUTDOWN, VALUE_8800_SHUTDOWN_NOSHUT_DEFAULTS]);
-    I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_SCANLIMIT, VALUE_8800_SCANLIMIT_ALL_DIGITS]);
-    I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_LED_ROW_0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    // configure the HMI display/buttons
+    HMI_DISPLAY.set_up::<I2c2>(&peripherals);
 
     // do a JEDEC reset on flash
     crate::flash::jedec_reset(&peripherals);
@@ -626,25 +531,20 @@ fn main() -> ! {
     }
 
     // pull ~{HOLD}/~{RESET} high (because it's probably configured as HOLD)
-    peripherals.GPIOE.odr().modify(|_, w| w
-        .odr7().high()
-    );
+    FlashNotHoldOrNotReset::set_high(&peripherals);
     // sleep a bit to ensure flash chip gets the hint
     for _ in 0..1024 {
         cortex_m::asm::nop();
     }
 
     // pull ~{write-prot} high
-    peripherals.GPIOD.odr().modify(|_, w| w
-        .odr12().high()
-    );
+    FlashWriteProtect::set_low(&peripherals);
     // sleep a bit to ensure flash chip gets the hint
     for _ in 0..1024 {
         cortex_m::asm::nop();
     }
 
-    /*
-    // nuke the flash chip
+    // reset the flash chip state (should not delete its contents)
     do_with_flash_chip_selected(&peripherals, |p| {
         let mut asplode1 = [0x66];
         Spi1::communicate_bytes(p, &mut asplode1)
@@ -660,33 +560,26 @@ fn main() -> ! {
     for _ in 0..5000 {
         cortex_m::asm::nop();
     }
-    */
 
-    // enable writing
-    do_with_flash_chip_selected(&peripherals, |p|
-        crate::flash::enable_writing(p)
-    );
+    // pull ~{write-prot} low
+    FlashWriteProtect::set_low(&peripherals);
     // sleep a bit to ensure flash chip gets the hint
     for _ in 0..1024 {
         cortex_m::asm::nop();
     }
+
     // read status registers
     let status_register = do_with_flash_chip_selected(&peripherals, |p|
         crate::flash::read_all_status_registers(p)
     );
-    I2c2::write_data(
-        &peripherals, ADDR_8800,
+    HMI_DISPLAY.write_to_display::<I2c2>(
+        &peripherals,
         &[
-            REG_8800_LED_ROW_0,
             status_register[0], status_register[1],
             status_register[2], status_register[3],
             status_register[4], 0,
             0, 0,
         ],
-    );
-    // pull ~{write-prot} low
-    peripherals.GPIOD.odr().modify(|_, w| w
-        .odr12().low()
     );
 
     // read outside and inside address and packet format from flash
@@ -700,13 +593,9 @@ fn main() -> ! {
         crate::flash::read(p, crate::flash::Address::new(0).unwrap(), &mut address_buffer)
     );
     // visualize what is programmed into Flash
-    I2c2::write_data(
-        &peripherals, ADDR_8800,
-        &[
-            REG_8800_LED_ROW_0,
-            address_buffer[0], address_buffer[1], address_buffer[2], address_buffer[3],
-            address_buffer[4], address_buffer[5], address_buffer[6], address_buffer[7],
-        ],
+    HMI_DISPLAY.write_to_display::<I2c2>(
+        &peripherals,
+        &address_buffer[0..8],
     );
 
     let mut outside_address =
@@ -728,20 +617,12 @@ fn main() -> ! {
         | u32::from(address_buffer[12]) <<  8
         | u32::from(address_buffer[13]) <<  0;
 
-    // pull PC15 low to reset EnOcean module
-    peripherals.GPIOC.odr().modify(|_, w| w
-        .odr15().low()
-    );
-
-    // wait a bit
+    // reset EnOcean module
+    EnOceanNotReset::set_low(&peripherals);
     for _ in 0..4*1024*1024 {
         cortex_m::asm::nop();
     }
-
-    // pull PC15 high to unreset EnOcean module
-    peripherals.GPIOC.odr().modify(|_, w| w
-        .odr15().high()
-    );
+    EnOceanNotReset::set_high(&peripherals);
 
     let mut top_display = TempDisplayState::new(true);
     let mut bottom_display = TempDisplayState::new(false);
@@ -777,18 +658,8 @@ fn main() -> ! {
         cortex_m::peripheral::NVIC::unmask(Interrupt::EXTI15_10);
     }
 
-    // clear out the button state
-    let mut button_buf = [0u8; 2];
-    I2c2::write_data(
-        &peripherals, ADDR_8800,
-        &[
-            REG_8800_KEYA,
-        ],
-    );
-    I2c2::read_data(
-        &peripherals, ADDR_8800,
-        &mut button_buf,
-    );
+    // clear out the button state to make the AS1115 drop the interrupt flag
+    let _ = HMI_DISPLAY.read_buttons::<I2c2>(&peripherals);
 
     // from here on, we should yield instead of busywaiting
 
@@ -931,10 +802,7 @@ fn main() -> ! {
 
                         // erase the first block of flash
                         // pull ~{write-prot} high
-                        peripherals.GPIOD.odr().modify(|_, w| w
-                            .odr12().high()
-                        );
-
+                        FlashWriteProtect::set_high(&peripherals);
                         // enable writing
                         do_with_flash_chip_selected(&peripherals, |p|
                             crate::flash::enable_writing(p)
@@ -972,11 +840,8 @@ fn main() -> ! {
                         );
                         // wait until writing is done
                         yield_for_flash(&peripherals);
-
                         // pull ~{write-prot} low
-                        peripherals.GPIOD.odr().modify(|_, w| w
-                            .odr12().low()
-                        );
+                        FlashWriteProtect::set_low(&peripherals);
 
                         // now the variables are updated and the state is persisted
 
@@ -1030,17 +895,13 @@ fn do_with_flash_chip_selected<T, P: FnMut(&Peripherals) -> T>(
     mut procedure: P,
 ) -> T {
     // pull chip select low
-    peripherals.GPIOE.odr().modify(|_, w| w
-        .odr8().low()
-    );
+    FlashNotChipSelect::set_low(peripherals);
 
     // run the procedure
     let ret = procedure(peripherals);
 
     // pull chip select high
-    peripherals.GPIOE.odr().modify(|_, w| w
-        .odr8().high()
-    );
+    FlashNotChipSelect::set_high(peripherals);
 
     cortex_m::asm::nop();
 
@@ -1315,89 +1176,33 @@ fn update_displays(
     bottom_display: &mut TempDisplayState,
     force: bool,
 ) {
-    // all CS pins on the I2C-SPI bridge are set to GPIO
-    // but according to the datasheet we can't pass 0, so pass 1
-    const CHIP_SELECT_PATTERN: u8 = 0b001;
-
     if force || top_display.is_dirty() {
         // send top display data via I2C/SPI
         top_display.send_via_i2c_spi_bridge::<I2c2>(
-            &peripherals,
-            ADDR_I2C_SPI,
-            CHIP_SELECT_PATTERN,
+            peripherals,
+            &TEMP_DISPLAYS,
             true,
         );
         // pull the chip 1 XLAT pin up, wait a bit, then pull it down again
-        I2c2::write_data(
-            &peripherals,
-            ADDR_I2C_SPI,
-            &[
-                0xF4, // GPIO output
-                (
-                    (0b00000 << 3) // reserved pins
-                    | (0b0 << 2) // CS2 is an input anyway
-                    | (0b0 << 1) // CS1 is an input anyway
-                    | (0b1 << 0) // pull CS0 (chip 1 XLAT) up
-                ),
-            ],
-        );
+        TEMP_DISPLAYS.set_chip_1_xlat::<I2c2>(peripherals, true);
         for _ in 0..1024 {
             cortex_m::asm::nop();
         }
-        I2c2::write_data(
-            &peripherals,
-            ADDR_I2C_SPI,
-            &[
-                0xF4,
-                (
-                    (0b00000 << 3)
-                    | (0b0 << 2)
-                    | (0b0 << 1)
-                    | (0b0 << 0) // down this time
-                ),
-            ],
-        );
+        TEMP_DISPLAYS.set_chip_1_xlat::<I2c2>(peripherals, false);
     }
 
     if force || bottom_display.is_dirty() {
         // same for the bottom display
         bottom_display.send_via_i2c_spi_bridge::<I2c2>(
-            &peripherals,
-            ADDR_I2C_SPI,
-            CHIP_SELECT_PATTERN,
+            peripherals,
+            &TEMP_DISPLAYS,
             true,
         );
-        I2c2::write_data(
-            &peripherals,
-            ADDR_I2C_EXP,
-            &[
-                0x01, // GPIO output
-                (
-                    (0b0000 << 4) // IO4-IO7 unused and configured as inputs
-                    | (0b0 << 3) // IO3 is an input
-                    | (0b0 << 2) // IO2 is "blank" and should be off
-                    | (0b1 << 1) // IO1 is "latch" for chip 2, this is the important one
-                    | (0b1 << 0) // IO0 is ~{ClickID} so keep it high
-                ),
-            ],
-        );
+        TEMP_DISPLAYS.set_chip_2_xlat::<I2c2>(peripherals, true);
         for _ in 0..1024 {
             cortex_m::asm::nop();
         }
-        I2c2::write_data(
-            &peripherals,
-            ADDR_I2C_EXP,
-            &[
-                0x01,
-                (
-                    (0b0000 << 4)
-                    | (0b0 << 3)
-                    | (0b0 << 2)
-                    | (0b0 << 1) // and down again
-                    | (0b1 << 0)
-                ),
-            ],
-        );
+        TEMP_DISPLAYS.set_chip_2_xlat::<I2c2>(peripherals, false);
     }
 }
 
@@ -1409,9 +1214,7 @@ fn background_task_button_state(peripherals: &Peripherals) {
         return;
     }
 
-    I2c2::write_data(&peripherals, ADDR_8800, &[REG_8800_KEYA]);
-    let mut key_values = [0u8; 2];
-    I2c2::read_data(&peripherals, ADDR_8800, &mut key_values);
+    let key_values = HMI_DISPLAY.read_buttons::<I2c2>(peripherals);
 
     // by default: 0 pressed, 1 not pressed; invert that
     let negated_all_key_values =
