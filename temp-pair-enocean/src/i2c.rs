@@ -145,6 +145,81 @@ pub trait I2c {
             .stop().set_bit()
         );
     }
+
+    /// Writes then reads data via the I2C bus without relinquishing it.
+    ///
+    /// A sequence of [`write_data`](I2c::write_data) followed by [`read_data`](I2c::read_data)
+    /// performs a Start condition, the write, a Stop condition, a Start condition, the read, and a
+    /// Stop condition.
+    ///
+    /// This function instead performs a Start condition, the write, a repeated Start condition, the
+    /// read, and a Stop condition. This may be required by some hardware; otherwise, the written
+    /// register number may be forgotten before the read.
+    fn write_then_read_data(peripherals: &Peripherals, address: I2cAddress, write_data: &[u8], read_data: &mut [u8]) {
+        let i2c = Self::get_peripheral(peripherals);
+
+        assert!(write_data.len() <= 0xFF);
+        assert!(read_data.len() <= 0xFF);
+
+        // set address and write bit
+        i2c.cr2().modify(|_, w| w
+            .sadd().set((address.as_u8() << 1) as u16) // 7-bit addresses are shifted one left
+            .rd_wrn().write() // we are writing
+            .nbytes().set(write_data.len() as u8)
+            .reload().clear_bit() // no reloading after 255 bytes
+            .autoend().clear_bit() // we will issue the STOP condition ourselves
+        );
+
+        // wait until bus is idle
+        while i2c.isr().read().busy().is_busy() {
+        }
+
+        // go go go!
+        i2c.cr2().modify(|_, w| w
+            .start().set_bit()
+        );
+
+        for &byte in write_data {
+            // wait until the write register is empty
+            while i2c.isr().read().txe().is_not_empty() {
+            }
+
+            // write
+            i2c.txdr().modify(|_, w| w
+                .txdata().set(byte)
+            );
+        }
+
+        // wait until the transfer is complete
+        while i2c.isr().read().tc().is_not_complete() {
+        }
+
+        // issue a repeated START, now with reading
+        i2c.cr2().modify(|_, w| w
+            .sadd().set((address.as_u8() << 1) as u16) // 7-bit addresses are shifted one left
+            .rd_wrn().read() // we are reading
+            .nbytes().set(read_data.len() as u8)
+            .reload().clear_bit() // no reloading after 255 bytes
+            .autoend().clear_bit() // we will issue the STOP condition ourselves
+            .start().set_bit() // (repeated) start
+        );
+
+        for byte in read_data {
+            // wait until the read register is full
+            while i2c.isr().read().rxne().is_empty() {
+            }
+            *byte = i2c.rxdr().read().rxdata().bits();
+        }
+
+        // wait until transfer is complete
+        while i2c.isr().read().tc().is_not_complete() {
+        }
+
+        // we are done
+        i2c.cr2().modify(|_, w| w
+            .stop().set_bit()
+        );
+    }
 }
 
 macro_rules! implement_i2c {
