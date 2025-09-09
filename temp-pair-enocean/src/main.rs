@@ -673,6 +673,11 @@ fn main() -> ! {
         top_display.set_brightness(brightness_u12);
         bottom_display.set_brightness(brightness_u12);
 
+        // DEBUG: output raw value to HMI display
+        let mut hmi_display_bytes = [0u8; 8];
+        hmi_display_bytes[0..2].copy_from_slice(&brightness_u16.to_be_bytes());
+        HMI_DISPLAY.write_to_display::<I2c2>(&peripherals, &hmi_display_bytes);
+
         // process background tasks
         yield_for(&peripherals, Duration::ZERO);
 
