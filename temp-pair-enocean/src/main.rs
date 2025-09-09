@@ -2,6 +2,7 @@
 #![no_std]
 
 
+mod ambient_sensor;
 mod crc8;
 mod enocean;
 mod flash;
@@ -23,8 +24,10 @@ use stm32f7::stm32f745::{Interrupt, interrupt, Peripherals};
 use stm32f7::stm32f745::spi1::cr1::BR;
 use vcell::VolatileCell;
 
+use crate::ambient_sensor::AmbientLightSensor;
 use crate::gpio_output::{
-    BlinkyLedA8, BlinkyLedC8, EnOceanNotReset, FlashNotChipSelect, FlashNotHoldOrNotReset, FlashWriteProtect, GpioOutput, TempDisplayBridgeNotReset
+    BlinkyLedA8, BlinkyLedC8, EnOceanNotReset, FlashNotChipSelect, FlashNotHoldOrNotReset,
+    FlashWriteProtect, GpioOutput, TempDisplayBridgeNotReset,
 };
 use crate::hmi_display::HmiDisplay;
 use crate::i2c::{I2c, I2c2, I2cAddress};
@@ -34,8 +37,6 @@ use crate::uart::{Uart, Usart2, Usart3};
 
 
 pub const CLOCK_SPEED_HZ: u32 = 25_000_000;
-
-const ADDR_AMB_SEN: I2cAddress = I2cAddress::new(0b0101001).unwrap();
 
 const HMI_DISPLAY: HmiDisplay = HmiDisplay {
     // Retro 8800 Click board
@@ -50,6 +51,9 @@ const TEMP_DISPLAYS: I2cSpiBridgedTempDisplays = I2cSpiBridgedTempDisplays {
     // all CS pins on the I2C-SPI bridge are set to GPIO
     // but according to the datasheet we can't pass 0, so pass 1
     chip_select_pattern: 0b001,
+};
+const AMBIENT_LIGHT_SENSOR: AmbientLightSensor = AmbientLightSensor {
+    i2c_address: I2cAddress::new(0b0101001).unwrap(),
 };
 
 
@@ -496,29 +500,7 @@ fn main() -> ! {
     TEMP_DISPLAYS.set_up::<I2c2>(&peripherals);
 
     // configure the ambient light sensor
-    I2c2::write_data(
-        &peripherals,
-        ADDR_AMB_SEN,
-        &[
-            0x00, // ALS_CONF_0 (followed by ALS_CONF_1)
-            (
-                (0b0 << 7) // reserved
-                | (0b111 << 4) // 400ms integration time
-                | (0b0 << 3) // continuous measurement
-                | (0b0 << 2) // no measurement trigger
-                | (0b0 << 1) // no interrupt
-                | (0b1 << 0) // turn on the sensor (1/2)
-            ),
-            (
-                (0b1 << 7) // turn on the sensor (2/2)
-                | (0b0 << 6) // use whole photodiode
-                | (0b0 << 5) // reserved
-                | (0b00 << 3) // x1 gain
-                | (0b00 << 1) // no interrupt hysteresis (we're not using the interrupt anyway)
-                | (0b1 << 0) // perform internal calibration
-            ),
-        ],
-    );
+    AMBIENT_LIGHT_SENSOR.set_up::<I2c2>(&peripherals);
 
     // configure the HMI display/buttons
     HMI_DISPLAY.set_up::<I2c2>(&peripherals);
@@ -682,21 +664,8 @@ fn main() -> ! {
         yield_for(&peripherals, Duration::ZERO);
 
         // ambient light logic
-        I2c2::write_data(
-            &peripherals,
-            ADDR_AMB_SEN,
-            &[
-                0x10, // ALS_DATA_L (followed by ALS_DATA_H)
-            ],
-        );
-        let mut light_bytes = [0u8; 2];
-        I2c2::read_data(
-            &peripherals,
-            ADDR_AMB_SEN,
-            &mut light_bytes,
-        );
+        let brightness_u16 = AMBIENT_LIGHT_SENSOR.read_ambient_light::<I2c2>(&peripherals);
         // FIXME: scaling factor? curve?
-        let brightness_u16 = u16::from_le_bytes(light_bytes);
         let mut brightness_u12 = Brightness::new(brightness_u16 >> 4).unwrap();
         if brightness_u12.as_u16() == 0 {
             brightness_u12 = Brightness::new(1).unwrap();
@@ -707,7 +676,7 @@ fn main() -> ! {
         // process background tasks
         yield_for(&peripherals, Duration::ZERO);
 
-        // HMI logic
+        // delayed HMI processing logic
         let all_key_values = critical_section::with(|cs| {
             let guard = BUTTON_STATUS.borrow(cs);
             match guard.get() {
