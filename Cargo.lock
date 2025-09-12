@@ -143,8 +143,7 @@ checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 [[package]]
 name = "stm32f7"
 version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a5df42747be8091db3cf560a4e1409b9fffc92fbba0ef5f9740b9dfdb54b76c"
+source = "git+https://github.com/stm32-rs/stm32-rs-nightlies.git#cc1fd2011144dce6c4b6ff3c0aae730724309186"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",

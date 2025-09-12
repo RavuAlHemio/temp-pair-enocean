@@ -630,10 +630,9 @@ fn main() -> ! {
         .pr14().clear_bit_by_one() // clear any pending interrupt
     );
     // link external interrupt 14 with GPIOB
-    // TODO: port to safe code once fields are merged: https://github.com/stm32-rs/stm32-rs/pull/1265
-    peripherals.SYSCFG.exticr4().modify(|_, w| unsafe { w
-        .exti14().bits(0b0001)
-    });
+    peripherals.SYSCFG.exticr4().modify(|_, w| w
+        .exti14().pb()
+    );
     // unmask interrupt
     unsafe {
         core_peripherals.NVIC.set_priority(Interrupt::EXTI15_10, 0);
